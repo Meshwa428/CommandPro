@@ -172,20 +172,12 @@ DEFFUN MoveAndWait(x, y, waitTime) {
     MOVE MOUSE TO (x, y);
     WAIT waitTime;
 };
-PRINT "\n\n\n\n";
-
-
-
 
 -- Variable declarations
 PRINTLN "Variable declarations";
 SET myX = 200;
 SET myY = 300;
 SET myWaitTime = 2s;
-PRINT "\n\n\n\n";
-
-
-
 
 -- Function call using variables
 PRINTLN "Function call using variables";
@@ -225,6 +217,12 @@ PRINT "\n\n\n\n";
 
 -- In functions
 PRINTLN "In functions";
+DEFFUN WaitAndMove(waitTime, x, y) {
+    WAIT waitTime;
+    MOVE MOUSE TO (x, y);
+};
+
+
 DEFFUN WaitAndMove(waitTime, x, y) {
     WAIT waitTime;
     MOVE MOUSE TO (x, y);

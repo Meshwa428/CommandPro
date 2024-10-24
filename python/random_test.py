@@ -8,7 +8,7 @@ class CommandParser:
             "PRESS": r"PRESS (KEY|BUTTON) (.*);",
             "HOLD": r"HOLD (KEY|BUTTON) (.*);",
             "TYPE": r'TYPE "(.*)";',
-            "WAIT": r"WAIT ([\d\w]+(?:h|m|s|ms)?);",
+            "WAIT": r"WAIT\s+((?:\d+(?:\.\d+)?)(?:h|m|s|ms)?|[\w]+);",
             "REPEAT": r"REPEAT (\d+) TIMES {",
             "CLOSE": r"CLOSE WINDOW (.*);",
             "OPEN": r"OPEN (APP|FILE) (.*);",
@@ -26,6 +26,16 @@ class CommandParser:
         self.functions = {}
         self.variables = {}
         self.type_converters = {"INT": int, "FLOAT": float, "STR": str}
+
+    def is_valid_variable_name(self, var_name):
+        # Regex pattern for valid Python variable names
+        pattern = r"^[a-zA-Z_][a-zA-Z0-9_]*$"
+
+        # Check if the variable name matches the pattern
+        if re.match(pattern, var_name):
+            return True
+        else:
+            return False
 
     def evaluate_expression(self, expr, variables):
         """Evaluate a print expression that might contain variables and strings."""
@@ -288,7 +298,7 @@ class CommandParser:
                     break
             else:
                 if line != "};" and line != "END IF;":
-                    print(f"Syntax Error: Unknown command '{line}'")
+                    raise SyntaxError(f"Unknown command '{line}', line '{i}'")
 
     def parse_args(self, args_str):
         """Parse function arguments, handling quoted strings and preserving whitespace."""
@@ -378,25 +388,30 @@ class CommandParser:
 
         elif command == "SET":
             var_name, value = args
-            # Check if it's a time value with units
-            time_match = re.match(r"^(\d+(?:\.\d+)?)(h|m|s|ms)$", value.strip())
-            if time_match:
-                variables[var_name] = value.strip()
-                if not isinstance(variables, dict):
-                    self.variables[var_name] = value.strip()
-            else:
-                try:
-                    # Handle other types of values
-                    if value.startswith('"') and value.endswith('"'):
-                        evaluated_value = value[1:-1]
-                    else:
-                        # Try to evaluate as numeric expression
-                        evaluated_value = eval(value, {"__builtins__": None}, variables)
-                    variables[var_name] = evaluated_value
+            if self.is_valid_variable_name(var_name):
+                # Check if it's a time value with units
+                time_match = re.match(r"^(\d+(?:\.\d+)?)(h|m|s|ms)$", value.strip())
+                if time_match:
+                    variables[var_name] = value.strip()
                     if not isinstance(variables, dict):
-                        self.variables[var_name] = evaluated_value
-                except Exception as e:
-                    print(f"Error evaluating expression: {e}")
+                        self.variables[var_name] = value.strip()
+                else:
+                    try:
+                        # Handle other types of values
+                        if value.startswith('"') and value.endswith('"'):
+                            evaluated_value = value[1:-1]
+                        else:
+                            # Try to evaluate as numeric expression
+                            evaluated_value = eval(
+                                value, {"__builtins__": None}, variables
+                            )
+                        variables[var_name] = evaluated_value
+                        if not isinstance(variables, dict):
+                            self.variables[var_name] = evaluated_value
+                    except Exception as e:
+                        print(f"Error evaluating expression: {e}")
+            else:
+                raise SyntaxError(f"'{var_name}' is not a valid Identifier!")
 
         elif command == "PRESS":
             action_type, key = args
@@ -437,11 +452,12 @@ class CommandParser:
 # Example usage
 if __name__ == "__main__":
     code = """
-    WAIT 1.5h;
+    SET Hola = 13s;
+    WAIT Hola;
     """
 
-    # with open("../test.comp", "r") as file:
-    #     code = file.read()
+    with open("../test.comp", "r") as file:
+        code = file.read()
 
     parser = CommandParser()
     parser.parse(code)
