@@ -244,12 +244,7 @@ DEFFUN getUserInfo() {
 
 -- Variables for demonstration
 SET message = "Welcome to CommandPro!";
-SET count = 5;
-
--- Print examples
 PRINTLN message;
-PRINT "Count is: ";
-PRINTLN count;
 
 -- Function call to get user info
 getUserInfo();
@@ -279,5 +274,4 @@ PRINT "\n\n\n\n";
 
 
 -- Demonstrate mixing variables and strings
-SET name = "User";
 PRINTLN "Hello " + name + "! The count is " + count;
