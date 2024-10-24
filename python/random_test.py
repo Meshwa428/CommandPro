@@ -98,23 +98,6 @@ class CommandParser:
 
         return block_commands, i
 
-    def format_string(self, text, variables):
-        """Format string with variable interpolation."""
-        if text is None:
-            return ""
-
-        # Find all ${var} or $var patterns
-        var_pattern = r"\${(\w+)}|\$(\w+)"
-
-        def replace_var(match):
-            var_name = match.group(1) or match.group(2)
-            if var_name in variables:
-                return str(variables[var_name])
-            return match.group(0)
-
-        formatted = re.sub(var_pattern, replace_var, text)
-        return self.process_special_chars(formatted)
-
     def convert_to_milliseconds(self, time_str):
         """Convert a time string with units to milliseconds."""
         # If it's already a number, convert to milliseconds
@@ -290,6 +273,7 @@ class CommandParser:
             # Handle other commands
             for command, pattern in self.patterns.items():
                 match = re.match(pattern, line)
+                # print(match)
                 if match:
                     try:
                         self.execute(command, match.groups(), variables)
@@ -368,9 +352,8 @@ class CommandParser:
 
         elif command == "INPUT":
             prompt, var_name, type_spec = args + (None,) if len(args) == 2 else args
-            # Process escape sequences in the prompt
+            # Process escape sequences in the prompt and get input
             prompt = self.process_escape_sequences(prompt)
-            # Get input from user
             user_input = input(prompt)
 
             try:
@@ -452,12 +435,12 @@ class CommandParser:
 # Example usage
 if __name__ == "__main__":
     code = """
-    SET Hola = 13s;
-    WAIT Hola;
+    SET num = \"\"\"Multi line test\"\"\";
+    PRINTLN num;
     """
 
-    with open("../test.comp", "r") as file:
-        code = file.read()
+    # with open("../test.comp", "r") as file:
+    #     code = file.read()
 
     parser = CommandParser()
     parser.parse(code)
