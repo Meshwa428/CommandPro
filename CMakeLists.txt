@@ -1,16 +1,21 @@
-cmake_minimum_required(VERSION 3.10)
-project(CommandParser)
+cmake_minimum_required(VERSION 3.14)
+project(CommandPro)
 
-set(CMAKE_CXX_STANDARD 17)
+#find_program(CCACHE_PROGRAM ccache)
+#if(CCACHE_PROGRAM) 
+#  set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "{$CCACHE_PROGRAM}")
+#endif()
 
-# Include the nlohmann/json library
-include(FetchContent)
-FetchContent_Declare(
-  json
-  GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG v3.10.5
-)
-FetchContent_MakeAvailable(json)
+# Export compilation database in JSON format.
+set(CMAKE_EXPORT_COMPILE_COMMANDS on)
 
-add_executable(CommandParser main.cpp Lexer.cpp Parser.cpp)
-target_include_directories(CommandParser PRIVATE ${json_SOURCE_DIR}/include)
+# Define project directories
+#set(SOURCE_DIR "${CMAKE_SOURCE_DIR}/src")
+
+
+#set(SOURCE_FILES
+#    ${SOURCE_DIR}/main.c
+#)
+
+# Create the executable
+add_executable(CommandPro src/main.c)

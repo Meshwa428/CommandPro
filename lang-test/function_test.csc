@@ -1,16 +1,16 @@
 -- Function Definition
-DEFFUN getUserInfo() {
+DEFUN getUserInfo() {
     INPUT "Enter your name: " TO userName;
     INPUT "Enter your age: " TO userAge;
     PRINTLN "Hello, " + userName + "! You are " + userAge + " years old.";
 };
 
-DEFFUN MoveAndWait(x, y, waitTime) {
+DEFUN MoveAndWait(x, y, waitTime) {
     MOVE MOUSE TO (x, y);
     WAIT waitTime;
 };
 
-DEFFUN MoveAndWait_new_syntax(cordinates, waitTime) {
+DEFUN MoveAndWait_new_syntax(cordinates, waitTime) {
     MOVE MOUSE TO cordinates;
     WAIT waitTime;
 };

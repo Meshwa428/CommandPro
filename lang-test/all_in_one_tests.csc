@@ -171,7 +171,7 @@ CLICK LEFT (100, 300);
 
 -- Function definition
 PRINTLN "Function definition";
-DEFFUN MoveAndWait(x, y, waitTime) {
+DEFUN MoveAndWait(x, y, waitTime) {
     MOVE MOUSE TO (x, y);
     WAIT waitTime;
 };
@@ -220,13 +220,13 @@ PRINT "\n\n\n\n";
 
 -- In functions
 PRINTLN "In functions";
-DEFFUN WaitAndMove(waitTime, x, y) {
+DEFUN WaitAndMove(waitTime, x, y) {
     WAIT waitTime;
     MOVE MOUSE TO (x, y);
 };
 
 
-DEFFUN WaitAndMove(waitTime, x, y) {
+DEFUN WaitAndMove(waitTime, x, y) {
     WAIT waitTime;
     MOVE MOUSE TO (x, y);
 };
@@ -239,7 +239,7 @@ PRINT "\n\n\n\n";
 
 
 -- Function to get user info and print it
-DEFFUN getUserInfo() {
+DEFUN getUserInfo() {
     INPUT "Enter your name: " TO userName;
     INPUT "Enter your age: " TO userAge;
     PRINTLN "Hello, " + userName + "! You are " + userAge + " years old.";

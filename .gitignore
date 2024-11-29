@@ -11,3 +11,6 @@ CTestTestfile.cmake
 _deps
 CMakeUserPresets.json
 turotial
+build
+*.bkp
+.vscode

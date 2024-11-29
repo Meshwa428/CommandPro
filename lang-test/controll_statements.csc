@@ -1,4 +1,4 @@
-DEFFUN test_func(numbers) {
+DEFUN test_func(numbers) {
 	TRY {
 		FOR num IN numbers {
 			IF (num < 0) {

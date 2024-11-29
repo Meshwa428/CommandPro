@@ -26,12 +26,12 @@ INSTANTIATE OpenURL WITH ("https://openai.com");
 CLASS TextEditor {
     OPEN APP "Editor"; -- will be executed on creating an instance without a constructor
 
-    DEFFUN SaveFile(self) {
+    DEFUN SaveFile(self) {
         PRESS KEY CTRL+S;
         WAIT 1s;
     };
 
-    DEFFUN CloseEditor(self) {
+    DEFUN CloseEditor(self) {
         PRESS KEY ALT+F4;
     };
 };
@@ -52,7 +52,7 @@ CLASS CalculatorAutomation {
     OPEN APP "Calculator";
     WAIT 1s;
 
-    DEFFUN PerformOperation(self) {
+    DEFUN PerformOperation(self) {
         WRITE self.value1;
         PRESS KEY self.operation;
         WRITE self.value2;
@@ -73,7 +73,7 @@ CLASS TextEditorAutomation {
         PRESS KEY ENTER;
     };
 
-    DEFFUN SaveFile(self) {
+    DEFUN SaveFile(self) {
         PRESS KEY CTRL+S;
     };
 
