@@ -1,4 +1,4 @@
--- Function Definition
+# Function Definition
 DEFUN getUserInfo() {
     INPUT "Enter your name: " TO userName;
     INPUT "Enter your age: " TO userAge;
@@ -15,7 +15,7 @@ DEFUN MoveAndWait_new_syntax(cordinates, waitTime) {
     WAIT waitTime;
 };
 
--- Function Call
+# Function Call
 MoveAndWait(13, 20, 14s);
 
 SET cordinates = POINT(400, 199);

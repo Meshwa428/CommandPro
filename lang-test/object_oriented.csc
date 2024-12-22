@@ -1,4 +1,4 @@
--- Simple browser Automation
+# Simple browser Automation
 CLASS BrowserAutomation {
 	OPEN APP "browser";
 	WAIT 2s;
@@ -6,11 +6,11 @@ CLASS BrowserAutomation {
 	PRESS KEY ENTER;
 };
 
--- Creating instance of class
+# Creating instance of class
 INSTANTIATE BrowserAutomation AS myBrowser;
 
 
--- Class with Parameters (constructors and destructors)
+# Class with Parameters (constructors and destructors)
 CLASS OpenURL {
     CONSTRUCTOR(self, url) {
 	    OPEN APP "Browser";
@@ -24,7 +24,7 @@ INSTANTIATE OpenURL WITH ("https://openai.com");
 
 
 CLASS TextEditor {
-    OPEN APP "Editor"; -- will be executed on creating an instance without a constructor
+    OPEN APP "Editor"; # will be executed on creating an instance without a constructor
 
     DEFUN SaveFile(self) {
         PRESS KEY CTRL+S;
@@ -77,7 +77,7 @@ CLASS TextEditorAutomation {
         PRESS KEY CTRL+S;
     };
 
-    DESTRUCTOR { -- if not defined, a default destructor is created
+    DESTRUCTOR { # if not defined, a default destructor is created
         PRINT "Closing TextEditor.";
         PRESS KEY ALT+F4;
     };

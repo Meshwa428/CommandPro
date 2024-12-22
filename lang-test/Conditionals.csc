@@ -1,8 +1,8 @@
--- Nested conditions Break and Continue statement
-IF TRUE THEN {
+# Nested conditions Break and Continue statement
+IF (TRUE) THEN {
     BREAK;
 }
-ELSE IF FALSE {
+ELSE IF (FALSE) {
     PASS;
 }
 ELSE {
@@ -10,7 +10,7 @@ ELSE {
 }
 
 
--- complex example
+# complex example
 IF (KEY SHIFT IS HELD) THEN {
     RELEASE KEY SHIFT;
 }

@@ -98,4 +98,8 @@ For contributions, feedback, or inquiries, please contact the project maintainer
 
 ---
 
+Don't judge me, I am following [this](https://www.youtube.com/watch?v=apFUyLupFgE&list=PLysa8wRFCssxGKj_RxBWr3rwmjEYlJIpa) guys videos as guide.
+So most of the code could be copy/paste.
+All thanks goes to him, i am learning to make a compiler.
+
 **Thank you for your interest in this project!**  

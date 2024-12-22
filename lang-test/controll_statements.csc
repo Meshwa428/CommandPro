@@ -24,8 +24,8 @@ DEFUN test_func(numbers) {
 }
 
 SET numbers = LIST(3, -1, 0, 5, 12, 7);
--- or we can do this
--- SET numbers = [3, -1, 0, 5, 12, 7];
+# or we can do this
+# SET numbers = [3, -1, 0, 5, 12, 7];
 PRINTLN "Output Values:";
 FOR result in test_func(numbers) {
 	PRINTLN result;

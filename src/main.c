@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 long file_size(FILE* file) {
 	if (!file) { return 0; }
@@ -62,6 +63,7 @@ typedef struct Error {
 		ERROR_INVALID_ARGUMENT,
 		ERROR_SYNTAX,
 		ERROR_TODO,
+		ERROR_MAX,
 	} type;
 	char* msg;
 } Error;
@@ -73,6 +75,7 @@ void print_error(Error err) {
 		return;
 	}
 	printf("Error: ");
+	assert(ERROR_MAX == 6);
 	switch (err.type) {
 	default:
 		printf("Unknown error type");
@@ -109,7 +112,10 @@ void print_error(Error err) {
 	(n).msg = (message);
 
 
-// lex the next token from SOURCE, point to it with BEG and END
+const char* whitespace = " \t\r\n";
+const char* delimiters = " \r\n()[]{}:;+=-*/%-,\"\'<>|&^~!";
+
+/// lex the next token from SOURCE, point to it with BEG and END
 Error lex(char* source, char** beg, char** end) {
 	Error err = ok;
 	if (!source || !beg || !end) {
@@ -118,16 +124,72 @@ Error lex(char* source, char** beg, char** end) {
 	}
 
 	*beg = source;
-	*end = source;
+	*beg += strspn(*beg, whitespace);
+	*end = *beg;
+	if (**end == '\0') {
+		return err;
+	}
+	*end += strcspn(*end, delimiters);
+	if (*end == *beg) {
+		*end += 1;
+	}
 
 	return err;
 }
 
-Error parse_expr(char* source) {
+// TODO:
+// |-- API to create new Node
+// `-- API to add node as child
+typedef long long integer_t;
+typedef struct Node {
+	enum NodeType {
+		NODE_TYPE_NONE,
+		NODE_TYPE_INT,
+		NODE_TYPE_PROGRAM,
+		NODE_TYPE_MAX,
+	} type;
+	union NodeValue {
+		integer_t integer;
+	} value;
+	struct Node** children;
+
+} Node;
+
+
+#define nonep(node) ((node).type == NODE_TYPE_NONE)
+#define integerp(node) ((node).type == NODE_TYPE_INT)
+
+typedef struct Program {
+	Node* root;
+} Program;
+
+
+//TODO: 
+// |-- API to create new Binding
+// `-- API to add Binding to environment
+typedef struct Binding {
+	char* id;
+	Node* value;
+	struct Binding* next;
+} Binding;
+
+
+// TODO: API to create new Environment
+typedef struct Environment {
+	struct Environment* parent;
+	Binding* bind;
+} Environment;
+
+
+Error parse_expr(char* source, Node* result) {
 	char* beg = source;
 	char* end = source;
+	Error err = ok;
 
-	Error err = lex(source, &beg, &end);
+	while ((err = lex(end, &beg, &end)).type == ERROR_NONE) {
+		if (end - beg == 0) { break; }
+		printf("Lexed: %.*s\n", end - beg, beg);
+	}
 	return err;
 }
 
@@ -141,12 +203,14 @@ int main(int argc, char** argv) {
 	char* contents = file_contents(path);
 
 	if (contents) {
-		printf("Contents of %s:\n---\n\"%s\"\n---\n", path, contents);
+		// printf("Contents of %s:\n---\n\"%s\"\n---\n", path, contents);
+
+		Node expression;
+		Error err = parse_expr(contents, &expression);
+		print_error(err);
+
 		free(contents);
 	}
-
-	Error err = parse_expr(contents);
-	print_error(err);
-
 	return 0;
 }
+

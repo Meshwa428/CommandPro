@@ -1,11 +1,11 @@
 -- Conditional Logic
-IF WINDOW "Editor" EXISTS THEN {
+IF (WINDOW "Editor" EXISTS) THEN {
     FOCUS WINDOW "Editor";
-    IF WINDOW "VS" EXISTS THEN {
+    IF (WINDOW "VS" EXISTS) THEN {
         WRITE "Automated test.";
     };
 }
-ELSE IF WINDOW "Code" EXISTS THEN {
+ELSE IF (WINDOW "Code" EXISTS) THEN {
     PRINT "Test";
 }
 
@@ -16,7 +16,7 @@ REPEAT 3 TIMES {
 };
 
 SET i = 2;
-LOOP WHILE (i > 2) {
+WHILE (i > 2) {
     OPEN APP Minecraft;
     i++;
 }
