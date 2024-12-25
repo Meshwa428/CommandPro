@@ -14,7 +14,8 @@ class Token:
         self.next_token = next_token
 
     def __repr__(self):
-        return f"Token(kind='{self.kind}', value={self.value}, line={self.line})"
+        escaped_value = self.value.encode('unicode_escape').decode()
+        return f"Token(kind='{self.kind}', value='{escaped_value}', line={self.line})"
 
 class Lexer:
     def __init__(self, source_code):
@@ -187,7 +188,7 @@ class Lexer:
             "COMP_OP": r"===|!==|==|!=|<=|>=|<|>",
             "OP_ASSIGN": r"\+=|-=|\*=|/=|%=|&=|\^=|<<=|>>=",
             "BITWISE_OP": r"\||&|\^|~|<<|>>",
-            "OP": r"\*\*|[+\-*/]",  # Added ** as a single operator
+            "OP": r"\*\*|//|[+\-*/]",  # Added ** and // as single operators
             "ASSIGN": r"=",
             "TERMINATOR": r";",
 
@@ -222,9 +223,15 @@ class Lexer:
 
         for match in re.finditer(self.token_regex, self.source_code):
             kind = match.lastgroup
-            value = match.group()
+            value = match.group() 
 
-            logger.debug("Matched token: %s with value '%s' at line %d.", kind, value, self.line_num)
+            # Start of Selection
+            logger.debug(
+                "Matched token: %s with value '%s' at line %d.",
+                kind,
+                value.encode('unicode_escape').decode(),
+                self.line_num
+            )
 
             if kind == "NEWLINE":
                 self.line_num += 1

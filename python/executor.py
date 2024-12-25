@@ -1,17 +1,17 @@
-# 3. Executor Class
-
 from ast_nodes import (
     Program, FunctionDefinition, FunctionCall, Assignment, PrintStatement,
     WaitStatement, MoveMouse, KeyOperation, ButtonOperation,
     BinaryOperation, Identifier, Integer, Time, String, Boolean, Float,
     ASTNode, EmptyStatement,
-    WhileLoop, RepeatLoop, ControlStatement, IncrementDecrement,
-    IfStatement
+    WhileLoop, RepeatLoop, ControlStatement, IncrementDecrement, 
+    IfStatement, MoveWindow, FocusWindow, WindowExists
 )
-import time as time_module
 import logging
-from typing import Any, Dict, List
-from errors import TypeError, RuntimeError, ContinueException, ControlFlowException
+from typing import Any, Dict, List 
+from errors import TypeError, RuntimeError, ContinueException, ControlFlowException, ZeroDivisionError
+from utils.window_manager import WindowManager
+from utils.mouse_manager import MouseManager
+
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
@@ -22,6 +22,8 @@ class Executor:
         self.functions = {}
         self.call_stack = []
         self.verbose = verbose
+        self.window_manager = WindowManager()
+        self.mouse_manager = MouseManager()
 
     def log_execution(self, message: str):
         """Log execution message if verbose mode is enabled."""
@@ -236,6 +238,12 @@ class Executor:
                 if right == 0:
                     raise ZeroDivisionError("Division by zero.")
                 return left / right
+            elif operator == '//':
+                if (isinstance(left, float) or isinstance(right, float)) and right == 0:
+                    raise ZeroDivisionError("Float floor division by zero.")
+                elif right == 0:
+                    raise ZeroDivisionError("Division by zero.")
+                return left // right
             elif operator == '**':
                 return left ** right
             elif operator == '==':
@@ -260,9 +268,6 @@ class Executor:
         except TypeError as e:
             logger.error("Type error in binary operation: %s", e)
             raise TypeError(f"Type error in binary operation: {e}")
-        except ZeroDivisionError as e:
-            logger.error("Runtime error: %s", e)
-            raise RuntimeError(f"Runtime error: {e}")
 
     def evaluate_float(self, expr: Float, scope: Dict[str, Any]) -> float:
         """Return the float value of the expression."""
@@ -315,6 +320,11 @@ class Executor:
     def evaluate_boolean(self, expr: Boolean, scope: Dict[str, Any]) -> bool:
         return expr.value
 
+    def evaluate_windowexists(self, expr: WindowExists, scope: Dict[str, Any]) -> bool:
+        window_name = self.evaluate_expression(expr.window_name, scope)
+        return self.window_manager.exists(window_name)
+
+
     def execute_whileloop(self, stmt: WhileLoop, scope: Dict[str, Any]):
         """Execute a while loop with proper control flow."""
         while self.evaluate_expression(stmt.condition, scope):
@@ -357,6 +367,9 @@ class Executor:
 
     def execute_controlstatement(self, stmt: ControlStatement, scope: Dict[str, Any]):
         """Execute a control statement."""
+        if stmt.statement_type == "PASS":
+            self.log_execution("Executed PASS statement (no operation).")
+            return  # No operation for PASS
         value = None
         if stmt.value:
             value = self.evaluate_expression(stmt.value, scope)
@@ -409,3 +422,26 @@ class Executor:
         if stmt.else_body:
             for body_stmt in stmt.else_body:
                 self.execute_statement(body_stmt, scope)
+
+    def execute_movemouse(self, stmt: MoveMouse, scope: Dict[str, Any]):
+        x = self.evaluate_expression(stmt.x, scope)
+        y = self.evaluate_expression(stmt.y, scope)
+        self.mouse_manager.move(x, y)
+        self.log_execution(f"Executed MoveMouse to ({x}, {y}).")
+
+    def execute_movewindow(self, stmt: MoveWindow, scope: Dict[str, Any]):
+        window_name = self.evaluate_expression(stmt.window_name, scope)
+        x = self.evaluate_expression(stmt.x, scope)
+        y = self.evaluate_expression(stmt.y, scope)
+        if self.window_manager.move(window_name, x, y):
+            self.log_execution(f"Moved window '{window_name}' to ({x}, {y}).")
+        else:
+            raise RuntimeError(f"Window '{window_name}' does not exist.")
+
+    def execute_focuswindow(self, stmt: FocusWindow, scope: Dict[str, Any]):
+        window_name = self.evaluate_expression(stmt.window_name, scope)
+        if self.window_manager.focus(window_name):
+            self.log_execution(f"Focused window '{window_name}'.")
+        else:
+            raise RuntimeError(f"Window '{window_name}' does not exist.")
+

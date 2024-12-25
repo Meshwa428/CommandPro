@@ -8,6 +8,11 @@ class CustomError(Exception):
 
     pass
 
+class ZeroDivisionError(CustomError):
+    """Exception raised for division by zero."""
+    def __init__(self, message):
+        super().__init__(message)
+
 class SyntaxError(CustomError):
     """Exception raised for syntax errors in the input."""
     def __init__(self, message):

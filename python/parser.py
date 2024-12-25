@@ -4,7 +4,7 @@ from ast_nodes import (
     WaitStatement, MoveMouse, KeyOperation, ButtonOperation,
     BinaryOperation, Identifier, Integer, Time, String, Boolean, Float,
     ASTNode, EmptyStatement, WhileLoop, RepeatLoop, ControlStatement, IncrementDecrement,
-    IfStatement
+    IfStatement, MoveWindow, FocusWindow, WindowExists
 )
 from typing import List, Optional, Dict, Any
 from errors import SyntaxError
@@ -139,6 +139,9 @@ class Parser:
                 logger.error(error_msg)
                 raise SyntaxError(error_msg)
             return self.parse_control_statement()
+        
+        elif token.kind == "KEYWORD" and token.value == "PASS":
+            return self.parse_control_statement()
 
         elif token.kind == "ID":
             # Look ahead for increment/decrement operators or function call
@@ -155,6 +158,10 @@ class Parser:
             error_msg = f"Unexpected ID token '{token.value}' without context at line {token.line}"
             logger.error(error_msg)
             raise SyntaxError(error_msg)
+        
+        # implementing pre-increment and pre-decrement
+        elif token.kind in ["INCREMENT", "DECREMENT"]:
+            return self.parse_increment_decrement()
 
         elif token.kind == "KEYWORD" and token.value == "SET":
             return self.parse_assignment_statement()
@@ -168,7 +175,13 @@ class Parser:
 
         elif token.kind == "KEYWORD" and token.value == "MOVE":
             self.consume("KEYWORD")
-            return self.parse_move_statement()
+            if self.peek().kind == "TYPE_KEYWORD" and self.peek().value == "WINDOW":
+                return self.parse_move_window()
+            else:
+                return self.parse_move_mouse()
+
+        elif token.kind == "KEYWORD" and token.value == "FOCUS":
+            return self.parse_focus_window()
 
         elif token.kind == "KEYWORD" and token.value in ["HOLD", "RELEASE", "PRESS"]:
             return self.parse_key_operation()
@@ -355,7 +368,7 @@ class Parser:
             raise SyntaxError(error_msg)
 
         if self.peek().value == "TO":
-            self.consume("KEYWORD")  # Consume TO
+            self.consume("KEYWORD_TARGET")  # Consume TO
         else:
             error_msg = f"Expected 'TO' after MOUSE, got {self.peek().value} at line {self.peek().line}"
             logger.error(error_msg)
@@ -406,8 +419,11 @@ class Parser:
         try:
             return self.parse_expression_precedence(0)
         except SyntaxError as e:
-            error_msg = f"{e} at line {self.peek().line}"
-            logger.error(error_msg)
+            if "at line" in str(e):
+                error_msg = f"{e}"
+            else:
+                error_msg = f"{e} at line {self.peek().line}"
+                logger.error(error_msg)
             raise SyntaxError(error_msg) from e
 
     def parse_expression_precedence(self, min_precedence: int) -> ASTNode:
@@ -481,6 +497,8 @@ class Parser:
             self.consume("R_PAREN")
             logger.debug("Parsed parenthesized expression: %s", expr)
             return expr
+        elif token.kind == "TYPE_KEYWORD" and token.value == "WINDOW":
+            return self.parse_window_operation()
         else:
             error_msg = f"Unexpected token in expression: {token.kind} with value '{token.value}' at line {token.line}"
             logger.error(error_msg)
@@ -552,7 +570,7 @@ class Parser:
         return RepeatLoop(count, body)
 
     def parse_control_statement(self) -> ControlStatement:
-        """Parse control statements (BREAK, CONTINUE, RETURN, YIELD)."""
+        """Parse control statements (BREAK, CONTINUE, RETURN, YIELD, PASS)."""
         token = self.peek()
         keyword = self.consume("KEYWORD").value
         value = None
@@ -565,6 +583,11 @@ class Parser:
 
         self.consume("TERMINATOR")
         logger.debug("Parsed control statement: %s with value: %s", keyword, value)
+        
+        if keyword == "PASS":
+            # For PASS, no action is needed
+            return ControlStatement(keyword)
+        
         return ControlStatement(keyword, value)
 
     def parse_increment_decrement(self) -> IncrementDecrement:
@@ -640,4 +663,48 @@ class Parser:
             self.consume("R_BRACE")
 
         return IfStatement(condition, then_body, else_if_conditions, else_if_bodies, else_body)
+
+    def parse_move_window(self) -> MoveWindow:
+        """Parse a window movement statement."""
+        self.consume("TYPE_KEYWORD")  # Consume WINDOW
+        window_name = self.parse_expression()
+        self.consume("KEYWORD_TARGET")  # Consume TO
+        self.consume("L_PAREN")
+        x = self.parse_expression()
+        self.consume("COMMA")
+        y = self.parse_expression()
+        self.consume("R_PAREN")
+        self.consume("TERMINATOR")
+        return MoveWindow(window_name, x, y)
+
+    def parse_focus_window(self) -> FocusWindow:
+        """Parse a window focus statement."""
+        self.consume("KEYWORD")  # Consume FOCUS
+        self.consume("TYPE_KEYWORD")  # Consume WINDOW
+        window_name = self.parse_expression()
+        self.consume("TERMINATOR")
+        return FocusWindow(window_name)
+
+    def parse_window_operation(self) -> ASTNode:
+        """Parse window-related operations."""
+        self.consume("TYPE_KEYWORD")  # Consume WINDOW
+        
+        # Parse the window name as a string or identifier
+        if self.peek().kind == "STRING":
+            window_name = String(self.consume("STRING").value)
+        elif self.peek().kind == "ID":
+            window_name = Identifier(self.consume("ID").value)
+        else:
+            error_msg = f"Expected string or identifier for window name, got {self.peek().kind} at line {self.peek().line}"
+            logger.error(error_msg)
+            raise SyntaxError(error_msg)
+
+        # Check for EXISTS keyword
+        if self.peek().kind == "KEYWORD_ASSERTION" and self.peek().value == "EXISTS":
+            self.consume("KEYWORD_ASSERTION")
+            return WindowExists(window_name)
+        
+        error_msg = f"Expected window operation (EXISTS), got {self.peek().kind} at line {self.peek().line}"
+        logger.error(error_msg)
+        raise SyntaxError(error_msg)
 

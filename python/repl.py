@@ -4,6 +4,7 @@ from lexer import Lexer
 from parser import Parser
 from executor import Executor
 from argparse import ArgumentParser
+from errors import *
 
 def setup_logging(enable_logging=False, log_level=logging.DEBUG, log_file="app.log"):
     """Configure logging for the application."""
@@ -71,7 +72,7 @@ def interactive_mode(verbose=False):
     logger.info("Starting the REPL application.")
 
     executor = Executor(verbose=verbose)
-    print("Welcome to the Custom Language REPL. Type 'exit;' to quit.")
+    print("Welcome to the CommandPro REPL. Type 'exit;' to quit.")
     buffer = ""
     prompt = ">>> "
     brace_balance = 0
@@ -116,8 +117,9 @@ def interactive_mode(verbose=False):
                 logger.exception("Parsing failed with error: %s", e)
                 print(f"Parsing Error: {e}")
             except Exception as e:
-                logger.exception("Execution failed with error: %s", e)
-                print(f"Execution Error: {e}")
+                logger.exception("Execution failed with error: %s", f"{type(e).__name__}: {e}")
+                print(f"{type(e).__name__}: {e}")
+
 
             buffer = ""
             prompt = ">>> "
@@ -127,7 +129,7 @@ def interactive_mode(verbose=False):
             break
 
 def main():
-    parser = ArgumentParser(description="Custom Language Interpreter")
+    parser = ArgumentParser(description="CommandPro Interpreter")
     parser.add_argument("-f", "--file", help="File to run")
     parser.add_argument("-s", "--save_ast_path", help="Save the AST to a json file")
     parser.add_argument("-ast", "--ast_path", help="Path to the AST file")

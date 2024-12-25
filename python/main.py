@@ -1,7 +1,23 @@
-import pytest
+import json
+import logging
 from lexer import Lexer
 from parser import Parser
 from executor import Executor
+
+def setup_logging(enable_logging=False, log_level=logging.DEBUG, log_file="app.log"):
+    """Configure logging for the application."""
+    if not enable_logging:
+        logging.disable(logging.CRITICAL)
+        return
+    
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
 
 def test_while_loop_with_break():
     code = """
@@ -77,15 +93,71 @@ def test_increment_decrement():
     PRINTLN i;  # Should print 6
     i--;  # Single line comment: decrement i
     PRINTLN i;  # Should print 5
+
+    # Test Case 4: Conditional Logic
+    DEFUN test_case_4() {
+        PRINTLN "Test Case 4: Conditional Logic";
+        IF (WINDOW "Calculator" EXISTS) THEN {
+            FOCUS WINDOW "Calculator";
+            MOVE WINDOW "Calculator" TO (150, 150);
+            SET a = 10;
+        }
+        PRINTLN a;
+    };
+    test_case_4();
+    PRINTLN i;
+    PRINTLN ++i;
+    PRINTLN --i;
+    PRINT "\n\n\n\n";
     """
 
     lexer = Lexer(code)
     tokens = lexer.tokenize()
 
     executor = Executor()
+
+    executor.window_manager.create_window("Calculator", 800, 600)
+    executor.window_manager.create_window("Notepad", 800, 600)
+    executor.window_manager.create_window("Word", 800, 600)
+
     parser = Parser(tokens, executor.global_scope, executor.functions)  # Initialize i in global scope
+    ast = parser.parse()
+    with open("ast.json", "w") as file:
+        json.dump(ast.to_dict(), file, indent=4)
+    executor.execute(ast)
+
+def test_function_with_return():
+    code = """
+    DEFUN add(a, b) {
+        SET c = a + b;
+        RETURN c;
+    }
+    PRINTLN add(5, 3);
+    """
+    lexer = Lexer(code)
+    tokens = lexer.tokenize()
+    executor = Executor()
+    parser = Parser(tokens, executor.global_scope, executor.functions)
     ast = parser.parse()
     executor.execute(ast)
 
+def test_function_with_pass():
+    code = """
+    DEFUN add(a, b) {
+        PASS;
+    }
+    PRINTLN add(5, 3);
+    """
+    lexer = Lexer(code)
+    tokens = lexer.tokenize()
+    executor = Executor()
+    parser = Parser(tokens, executor.global_scope, executor.functions)
+    ast = parser.parse()
+
+
+    executor.execute(ast)
+
+
 if __name__ == "__main__":
+    # setup_logging(enable_logging=True)
     test_increment_decrement()
