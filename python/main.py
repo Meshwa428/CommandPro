@@ -1,5 +1,6 @@
 import json
 import logging
+import pytest
 from lexer import Lexer
 from parser import Parser
 from executor import Executor
@@ -19,7 +20,15 @@ def setup_logging(enable_logging=False, log_level=logging.DEBUG, log_file="app.l
         ]
     )
 
-def test_while_loop_with_break():
+@pytest.fixture
+def executor():
+    return Executor()
+
+@pytest.fixture
+def parser(executor):
+    return Parser(executor.global_scope, executor.functions)
+
+def test_while_loop_with_break(capsys, parser, executor):
     code = """
     SET i = 10;
     DEFUN increment(x) {
@@ -38,13 +47,13 @@ def test_while_loop_with_break():
     """
     lexer = Lexer(code)
     tokens = lexer.tokenize()
-    executor = Executor()
-    parser = Parser(tokens, executor.global_scope, executor.functions)
-    ast = parser.parse()
+    ast = parser.parse(tokens)
     executor.execute(ast)
-    # Should print 1, 2, 3, 4 only
+    captured = capsys.readouterr()
+    expected_output = "9\n8\n7\n6\nHello\nHello\nHello\nHello\nHello\n5\n4\n3\n2\n1"
+    assert captured.out.strip() == expected_output
 
-def test_function_with_return():
+def test_function_with_return(capsys, parser, executor):
     code = """
     DEFUN add(a, b) {
         SET c = a + b;
@@ -54,13 +63,13 @@ def test_function_with_return():
     """
     lexer = Lexer(code)
     tokens = lexer.tokenize()
-    executor = Executor()
-    parser = Parser(tokens, executor.global_scope, executor.functions)
-    ast = parser.parse()
+    ast = parser.parse(tokens)
     executor.execute(ast)
-    # Should print 5
+    captured = capsys.readouterr()
+    expected_output = "8"
+    assert captured.out.strip() == expected_output
 
-def test_nested_loops_with_control():
+def test_nested_loops_with_control(capsys, parser, executor):
     code = """
     REPEAT 3 TIMES {
         SET j = 0;
@@ -76,14 +85,13 @@ def test_nested_loops_with_control():
     """
     lexer = Lexer(code)
     tokens = lexer.tokenize()
-    executor = Executor()
-    parser = Parser(tokens, executor.global_scope, executor.functions)
-    ast = parser.parse()
-    
+    ast = parser.parse(tokens)
     executor.execute(ast)
-    # Should print 0, 2 three times
+    captured = capsys.readouterr()
+    expected_output = "0\n2\n0\n2\n0\n2"
+    assert captured.out.strip() == expected_output
 
-def test_increment_decrement():
+def test_increment_decrement(capsys, parser, executor):
     code = """
     #* This is a multi-line comment
        testing the increment and decrement
@@ -110,38 +118,29 @@ def test_increment_decrement():
     PRINTLN --i;
     PRINT "\n\n\n\n";
     """
-
     lexer = Lexer(code)
     tokens = lexer.tokenize()
-
-    executor = Executor()
-
     executor.window_manager.create_window("Calculator", 800, 600)
     executor.window_manager.create_window("Notepad", 800, 600)
     executor.window_manager.create_window("Word", 800, 600)
-
-    parser = Parser(tokens, executor.global_scope, executor.functions)  # Initialize i in global scope
-    ast = parser.parse()
+    ast = parser.parse(tokens)
     with open("ast.json", "w") as file:
         json.dump(ast.to_dict(), file, indent=4)
     executor.execute(ast)
+    captured = capsys.readouterr()
+    expected_output = (
+        "6\n"
+        "5\n"
+        "Test Case 4: Conditional Logic\n"
+        "10\n"
+        "5\n"
+        "6\n"
+        "5\n"
+        "\n\n\n\n"
+    )
+    assert captured.out == expected_output
 
-def test_function_with_return():
-    code = """
-    DEFUN add(a, b) {
-        SET c = a + b;
-        RETURN c;
-    }
-    PRINTLN add(5, 3);
-    """
-    lexer = Lexer(code)
-    tokens = lexer.tokenize()
-    executor = Executor()
-    parser = Parser(tokens, executor.global_scope, executor.functions)
-    ast = parser.parse()
-    executor.execute(ast)
-
-def test_function_with_pass():
+def test_function_with_pass(capsys, parser, executor):
     code = """
     DEFUN add(a, b) {
         PASS;
@@ -150,14 +149,8 @@ def test_function_with_pass():
     """
     lexer = Lexer(code)
     tokens = lexer.tokenize()
-    executor = Executor()
-    parser = Parser(tokens, executor.global_scope, executor.functions)
-    ast = parser.parse()
-
-
+    ast = parser.parse(tokens)
     executor.execute(ast)
-
-
-if __name__ == "__main__":
-    # setup_logging(enable_logging=True)
-    test_increment_decrement()
+    captured = capsys.readouterr()
+    expected_output = "None"
+    assert captured.out.strip() == expected_output

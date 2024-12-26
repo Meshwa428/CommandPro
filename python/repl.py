@@ -4,6 +4,7 @@ from lexer import Lexer
 from parser import Parser
 from executor import Executor
 from argparse import ArgumentParser
+from ast_nodes import Program
 from errors import *
 
 def setup_logging(enable_logging=False, log_level=logging.DEBUG, log_file="app.log"):
@@ -48,8 +49,8 @@ def execute_from_file(file_path, save_ast_path=None, verbose=False):
         lexer = Lexer(code)
         tokens = lexer.tokenize()
         executor = Executor(verbose=verbose)
-        parser = Parser(tokens, executor.global_scope, executor.functions)
-        ast = parser.parse()
+        parser = Parser(executor.global_scope, executor.functions)
+        ast = parser.parse(tokens)
 
         if save_ast_path:
             save_ast_to_json(ast, save_ast_path)
@@ -66,7 +67,7 @@ def execute_from_ast(ast_path, verbose=False):
     executor = Executor(verbose=verbose)
     executor.execute(ast)
 
-def interactive_mode(verbose=False):
+def interactive_mode(save_ast_path=None, verbose=False):
     """Run the REPL in interactive mode."""
     logger = logging.getLogger(__name__)
     logger.info("Starting the REPL application.")
@@ -76,6 +77,9 @@ def interactive_mode(verbose=False):
     buffer = ""
     prompt = ">>> "
     brace_balance = 0
+    
+    # Initialize cumulative program for AST
+    cumulative_program = Program([])
 
     while True:
         try:
@@ -109,10 +113,22 @@ def interactive_mode(verbose=False):
             try:
                 lexer = Lexer(buffer)
                 tokens = lexer.tokenize()
-                parser = Parser(tokens, executor.global_scope, executor.functions)
-                ast = parser.parse()
+                parser = Parser(executor.global_scope, executor.functions)
+                ast = parser.parse(tokens)
                 executor.execute(ast)
                 logger.info("Execution completed successfully.")
+
+                # Add the new statements to the cumulative program
+                if isinstance(ast, Program):
+                    cumulative_program.statements.extend(ast.statements)
+                else:
+                    cumulative_program.statements.append(ast)
+
+                # Save cumulative AST after execution if path is provided
+                if save_ast_path:
+                    save_ast_to_json(cumulative_program.to_dict(), save_ast_path)
+                    logger.debug(f"Cumulative AST saved to {save_ast_path}")
+
             except SyntaxError as e:
                 logger.exception("Parsing failed with error: %s", e)
                 print(f"Parsing Error: {e}")
@@ -120,13 +136,31 @@ def interactive_mode(verbose=False):
                 logger.exception("Execution failed with error: %s", f"{type(e).__name__}: {e}")
                 print(f"{type(e).__name__}: {e}")
 
-
             buffer = ""
             prompt = ">>> "
 
         except (EOFError, KeyboardInterrupt):
             print("\nGoodbye!")
             break
+
+def execute_code_string(code_string, save_ast_path=None, verbose=False):
+    """Execute code passed as a string."""
+    try:
+        lexer = Lexer(code_string)
+        tokens = lexer.tokenize()
+        executor = Executor(verbose=verbose)
+        parser = Parser(executor.global_scope, executor.functions)
+        ast = parser.parse(tokens)
+
+        if save_ast_path:
+            save_ast_to_json(ast.to_dict(), save_ast_path)
+
+        executor.execute(ast)
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return 1
+
+    return 0
 
 def main():
     parser = ArgumentParser(description="CommandPro Interpreter")
@@ -138,25 +172,29 @@ def main():
     parser.add_argument("-log_level", "--log_level", type=int, default=logging.DEBUG, help="Log level")
     parser.add_argument("-log_file", "--log_file", default="app.log", help="Log file path")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
-    
+    parser.add_argument("-c", "--code", help="Code string to execute directly")
+
     args = parser.parse_args()
 
     # Setup logging based on arguments
     setup_logging(args.log, args.log_level, args.log_file)
 
     try:
-        if args.ast_path:
+        if args.code:
+            # Execute code passed as a string
+            execute_code_string(args.code, args.save_ast_path, args.verbose)
+        elif args.ast_path:
             # Execute from AST file
             execute_from_ast(args.ast_path, args.verbose)
         elif args.file:
             # Execute from code file
             execute_from_file(args.file, args.save_ast_path, args.verbose)
         elif args.interactive:
-            # Run in interactive mode
-            interactive_mode(args.verbose)
+            # Run in interactive mode with AST saving if path is provided
+            interactive_mode(args.save_ast_path, args.verbose)
         else:
             # Default to interactive mode
-            interactive_mode(args.verbose)
+            interactive_mode(args.save_ast_path, args.verbose)
     except Exception as e:
         print(f"Error: {str(e)}")
         return 1

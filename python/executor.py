@@ -1,8 +1,8 @@
 from ast_nodes import (
-    Program, FunctionDefinition, FunctionCall, Assignment, PrintStatement,
+    ASTNode, Program,
+    FunctionDefinition, FunctionCall, Assignment, PrintStatement,
     WaitStatement, MoveMouse, KeyOperation, ButtonOperation,
     BinaryOperation, Identifier, Integer, Time, String, Boolean, Float,
-    ASTNode, EmptyStatement,
     WhileLoop, RepeatLoop, ControlStatement, IncrementDecrement, 
     IfStatement, MoveWindow, FocusWindow, WindowExists
 )

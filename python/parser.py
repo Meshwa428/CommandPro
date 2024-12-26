@@ -3,18 +3,18 @@ from ast_nodes import (
     Program, FunctionDefinition, FunctionCall, Assignment, PrintStatement,
     WaitStatement, MoveMouse, KeyOperation, ButtonOperation,
     BinaryOperation, Identifier, Integer, Time, String, Boolean, Float,
-    ASTNode, EmptyStatement, WhileLoop, RepeatLoop, ControlStatement, IncrementDecrement,
+    ASTNode, WhileLoop, RepeatLoop, ControlStatement, IncrementDecrement,
     IfStatement, MoveWindow, FocusWindow, WindowExists
 )
 from typing import List, Optional, Dict, Any
 from errors import SyntaxError
+from ast_nodes import Token
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
 
 class Parser:
-    def __init__(self, tokens, global_scope: Dict[str, Any], functions: Dict[str, FunctionDefinition]):
-        self.tokens = tokens
+    def __init__(self, global_scope: Dict[str, Any], functions: Dict[str, FunctionDefinition]):
         self.pos = 0
         self.precedence = {
             'OR': 1, 
@@ -44,7 +44,7 @@ class Parser:
         self.global_scope = global_scope
         self.functions = functions
         self.current_context = []  # Stack to track current context (LOOP, FUNCTION)
-        logger.debug("Parser initialized with %d tokens.", len(tokens))
+        
 
     def peek(self):
         if self.pos < len(self.tokens):
@@ -72,8 +72,10 @@ class Parser:
             logger.error(error_msg)
             raise SyntaxError(error_msg)
 
-    def parse(self) -> Program:
+    def parse(self, tokens: List[Token]) -> Program:
         """Parse the tokens and return an abstract syntax tree (AST)."""
+        self.tokens = tokens
+        logger.debug("Parser initialized with %d tokens.", len(tokens))
         logger.info("Starting parse process.")
         statements = []
         while self.peek().kind != "EOF":
@@ -592,25 +594,47 @@ class Parser:
 
     def parse_increment_decrement(self) -> IncrementDecrement:
         """Parse increment/decrement operations."""
-        var_token = self.peek()
-        var_name = self.consume("ID").value
+        token = self.peek()
 
-        # Check if variable exists in any scope
-        if not self.is_variable(var_name):
-            error_msg = f"Undefined variable '{var_name}' at line {var_token.line}"
+        if token.kind in ["INCREMENT", "DECREMENT"]:
+            # Prefix notation (++i or --i)
+            op = self.consume(token.kind).value
+
+            var_token = self.consume("ID").value
+
+            # Check if variable exists in any scope
+            if not self.is_variable(var_token):
+                error_msg = f"Undefined variable '{var_token}' at line {token.line}"
+                logger.error(error_msg)
+                raise SyntaxError(error_msg)
+
+            logger.debug("Parsed prefix increment/decrement: %s%s", op, var_token)
+            return IncrementDecrement(var_token, op, is_prefix=True)
+
+        elif token.kind == "ID":
+            # Postfix notation (i++ or i--)
+            var_name = self.consume("ID").value
+
+            # Check if variable exists in any scope
+            if not self.is_variable(var_name):
+                error_msg = f"Undefined variable '{var_name}' at line {token.line}"
+                logger.error(error_msg)
+                raise SyntaxError(error_msg)
+
+            op_token = self.peek()
+            if op_token.kind not in ["INCREMENT", "DECREMENT"]:
+                error_msg = f"Expected increment or decrement operator, got {op_token.kind} at line {op_token.line}"
+                logger.error(error_msg)
+                raise SyntaxError(error_msg)
+
+            op = self.consume(op_token.kind).value
+            logger.debug("Parsed postfix increment/decrement: %s%s", var_name, op)
+            return IncrementDecrement(var_name, op, is_prefix=False)
+
+        else:
+            error_msg = f"Expected ID or increment/decrement operator, got {token.kind} at line {token.line}"
             logger.error(error_msg)
             raise SyntaxError(error_msg)
-
-        # Get the operator token
-        op_token = self.peek()
-        if op_token.kind not in ["INCREMENT", "DECREMENT"]:
-            error_msg = f"Expected increment or decrement operator, got {op_token.kind} at line {op_token.line}"
-            logger.error(error_msg)
-            raise SyntaxError(error_msg)
-
-        op = self.consume(op_token.kind).value
-        logger.debug("Parsed increment/decrement: %s%s", var_name, op)
-        return IncrementDecrement(var_name, op)
 
     def parse_if_statement(self) -> IfStatement:
         """Parse an if statement with optional else-if and else clauses."""

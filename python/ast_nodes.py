@@ -1,6 +1,18 @@
 import json
 from typing import List, Optional
 
+class Token:
+    def __init__(self, kind, value, line, previous_token=None, next_token=None):
+        self.kind = kind
+        self.value = value
+        self.line = line  # New attribute to store the line number
+        self.previous_token = previous_token
+        self.next_token = next_token
+
+    def __repr__(self):
+        escaped_value = self.value.encode('unicode_escape').decode()
+        return f"Token(kind='{self.kind}', value='{escaped_value}', line={self.line})"
+
 class ASTNode:
     def to_dict(self):
         raise NotImplementedError("to_dict method not implemented.")
