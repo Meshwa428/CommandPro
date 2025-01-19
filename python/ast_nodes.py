@@ -10,7 +10,7 @@ class Token:
         self.next_token = next_token
 
     def __repr__(self):
-        escaped_value = self.value.encode('unicode_escape').decode()
+        escaped_value = str(self.value).encode('unicode_escape').decode()
         return f"Token(kind='{self.kind}', value='{escaped_value}', line={self.line})"
 
 class ASTNode:
@@ -31,20 +31,22 @@ class Program(ASTNode):
         }
 
 class FunctionDefinition(ASTNode):
-    def __init__(self, name: str, parameters: List[str], body: List[ASTNode]):
+    def __init__(self, name: Optional[str], parameters: List[str], body: List[ASTNode]):
         self.name = name
         self.parameters = parameters
         self.body = body
+        self.closure = {}  # Add closure attribute to store enclosing scope variables
 
     def __repr__(self):
-        return f"FunctionDefinition(name='{self.name}', parameters={self.parameters}, body={self.body})"
+        return f"FunctionDefinition(name='{self.name}', parameters={self.parameters}, body={self.body}, closure={self.closure})"
 
     def to_dict(self):
         return {
             "type": "FunctionDefinition",
             "name": self.name,
             "parameters": self.parameters,
-            "body": [stmt.to_dict() for stmt in self.body if stmt is not None]
+            "body": [stmt.to_dict() for stmt in self.body if stmt is not None],
+            "closure": self.closure
         }
 
 class Assignment(ASTNode):
@@ -93,19 +95,29 @@ class WaitStatement(ASTNode):
         }
 
 class MoveMouse(ASTNode):
-    def __init__(self, x: ASTNode, y: ASTNode):
+    def __init__(self, variable: ASTNode = None, x: ASTNode = None, y: ASTNode = None):
+        self.variable = variable
         self.x = x
         self.y = y
 
     def __repr__(self):
-        return f"MoveMouse(x={self.x}, y={self.y})"
+        if self.variable and (self.x is None and self.y is None):
+            return f"MoveMouse(variable={self.variable})"
+        else:
+            return f"MoveMouse(x={self.x}, y={self.y})"
 
     def to_dict(self):
-        return {
-            "type": "MoveMouse",
-            "x": self.x.to_dict(),
-            "y": self.y.to_dict()
-        }
+        if self.variable and (self.x is None and self.y is None):
+            return {
+                "type": "MoveMouse",
+                "variable": self.variable.to_dict()
+            }
+        else:
+            return {
+                "type": "MoveMouse",
+                "x": self.x.to_dict(),
+                "y": self.y.to_dict()
+            }
 
 class KeyOperation(ASTNode):
     def __init__(self, operation: str, key: str):
@@ -153,16 +165,18 @@ class BinaryOperation(ASTNode):
         }
 
 class Identifier(ASTNode):
-    def __init__(self, name: str):
+    def __init__(self, name: str, value: Optional[ASTNode] = None):
         self.name = name
+        self.value = value
     
     def __repr__(self):
-        return f"Identifier({self.name})"
+        return f"Identifier({self.name}, {self.value})"
 
     def to_dict(self):
         return {
             "type": "Identifier",
-            "name": self.name
+            "name": self.name,
+            "value": self.value.to_dict() if self.value else None
         }
 
 class Integer(ASTNode):
@@ -385,4 +399,62 @@ class WindowExists(ASTNode):
         return {
             "type": "WindowExists",
             "window_name": self.window_name.to_dict()
+        }
+
+class LambdaFunction(ASTNode):
+    def __init__(self, parameters: List[str], body: List[ASTNode]):
+        self.parameters = parameters
+        self.body = body
+
+    def __repr__(self):
+        return f"LambdaFunction(parameters={self.parameters}, body={self.body})"
+
+    def to_dict(self):
+        return {
+            "type": "LambdaFunction",
+            "parameters": self.parameters,
+            "body": [stmt.to_dict() for stmt in self.body if stmt is not None]
+        }
+
+class NamedArgument(ASTNode):
+    def __init__(self, name: str, value: ASTNode):
+        self.name = name
+        self.value = value
+
+    def __repr__(self):
+        return f"NamedArgument(name='{self.name}', value={self.value})"
+
+    def to_dict(self):
+        return {
+            "type": "NamedArgument",
+            "name": self.name,
+            "value": self.value.to_dict()
+        }
+
+class FunctionComposition(ASTNode):
+    def __init__(self, functions: List[ASTNode]):
+        self.functions = functions
+
+    def __repr__(self):
+        return f"FunctionComposition(functions={self.functions})"
+
+    def to_dict(self):
+        return {
+            "type": "FunctionComposition",
+            "functions": [func.to_dict() for func in self.functions]
+        }
+
+class Point(ASTNode):
+    def __init__(self, x: ASTNode, y: ASTNode):
+        self.x = x
+        self.y = y
+
+    def __repr__(self):
+        return f"Point(x={self.x}, y={self.y})"
+
+    def to_dict(self):
+        return {
+            "type": "Point",
+            "x": self.x.to_dict(),
+            "y": self.y.to_dict()
         }

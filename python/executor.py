@@ -1,16 +1,17 @@
-from ast_nodes import (
+from .ast_nodes import (
     ASTNode, Program,
     FunctionDefinition, FunctionCall, Assignment, PrintStatement,
     WaitStatement, MoveMouse, KeyOperation, ButtonOperation,
     BinaryOperation, Identifier, Integer, Time, String, Boolean, Float,
     WhileLoop, RepeatLoop, ControlStatement, IncrementDecrement, 
-    IfStatement, MoveWindow, FocusWindow, WindowExists
+    IfStatement, MoveWindow, FocusWindow, WindowExists,
+    LambdaFunction, FunctionComposition, Point, NamedArgument
 )
 import logging
 from typing import Any, Dict, List 
-from errors import TypeError, RuntimeError, ContinueException, ControlFlowException, ZeroDivisionError
-from utils.window_manager import WindowManager
-from utils.mouse_manager import MouseManager
+from .errors import TypeError, RuntimeError, ContinueException, ControlFlowException, ZeroDivisionError
+from .utils import WindowManager
+from .utils import MouseManager
 
 
 # Configure logger for this module
@@ -32,16 +33,16 @@ class Executor:
         logger.debug(message)
 
     def execute(self, ast: Program):
+        """Execute the entire AST program.
+        
+        Args:
+            ast (Program): The AST program to execute
+        """
         logger.info("Starting execution of AST.")
+        
         for stmt in ast.statements:
-            if isinstance(stmt, FunctionDefinition):
-                if stmt.name in self.functions:
-                    logger.error("Function '%s' is already defined.", stmt.name)
-                    raise Exception(f"Function '{stmt.name}' is already defined.")
-                self.functions[stmt.name] = stmt
-                logger.debug("Registered function '%s' in executor.", stmt.name)
-            else:
-                self.execute_statement(stmt, self.global_scope)
+            self.execute_statement(stmt, self.global_scope)
+        
         logger.info("Execution completed successfully.")
 
     def execute_statement(self, stmt: ASTNode, scope: Dict[str, Any]):
@@ -68,7 +69,7 @@ class Executor:
         if stmt.var_type or existing_type:
             target_type = stmt.var_type or existing_type
             try:
-                if target_type == 'INTEGER':
+                if target_type == 'INT':
                     if not isinstance(value, (int, float)):
                         value = int(value)
                     elif isinstance(value, float):
@@ -79,9 +80,9 @@ class Executor:
                     if not isinstance(value, (int, float)):
                         raise ValueError("Cannot convert value to FLOAT")
                     value = float(value)
-                elif target_type == 'STRING':
+                elif target_type == 'STR':
                     value = str(value)
-                elif target_type == 'BOOLEAN':
+                elif target_type == 'BOOL':
                     if isinstance(value, str):
                         if value.upper() in ('TRUE', 'FALSE'):
                             value = value.upper() == 'TRUE'
@@ -94,6 +95,9 @@ class Executor:
                         raise ValueError(f"Invalid TIME value: {value}")
                     # Assuming TIME is stored as seconds
                     value = float(value[0])
+                elif target_type == 'POINT':
+                    if not isinstance(value, Point):
+                        raise ValueError(f"Cannot convert {value} to POINT")
             except (ValueError, TypeError) as e:
                 logger.error("Type conversion error for variable '%s': %s", 
                             stmt.variable_name, str(e))
@@ -127,9 +131,26 @@ class Executor:
         self.log_execution(f"Executed WaitStatement: Waiting for {value} seconds.")
 
     def execute_movemouse(self, stmt: MoveMouse, scope: Dict[str, Any]):
-        x = self.evaluate_expression(stmt.x, scope)
-        y = self.evaluate_expression(stmt.y, scope)
-        # Implement mouse movement logic here
+        """Execute a mouse movement statement."""
+        if stmt.variable:
+            # If we have a point variable or direct point
+            point = self.evaluate_expression(stmt.variable, scope)
+            if isinstance(point, Point):
+                # Get the actual numeric values from the point
+                x = self.evaluate_expression(point.x, scope)
+                y = self.evaluate_expression(point.y, scope)
+            else:
+                raise TypeError(f"Expected Point type, got {type(point)}")
+        else:
+            # Otherwise evaluate both x and y coordinates
+            x = self.evaluate_expression(stmt.x, scope)
+            y = self.evaluate_expression(stmt.y, scope)
+
+        # Convert to integers if needed
+        x = int(x) if isinstance(x, float) else x
+        y = int(y) if isinstance(y, float) else y
+
+        self.mouse_manager.move(x, y)
         self.log_execution(f"Executed MoveMouse to ({x}, {y}).")
 
     def execute_keyoperation(self, stmt: KeyOperation, scope: Dict[str, Any]):
@@ -145,16 +166,65 @@ class Executor:
 
     def execute_functioncall(self, stmt: FunctionCall, scope: Dict[str, Any]):
         """Execute a function call with proper return value handling."""
-        function = self.functions.get(stmt.function_name)
-        if not function:
-            logger.error("Undefined function '%s'.", stmt.function_name)
-            raise RuntimeError(f"Undefined function '{stmt.function_name}'.")
+        # First check if it's a variable in the current scope (could be a function parameter)
+        if stmt.function_name in scope and callable(scope[stmt.function_name]):
+            # If it's a callable in the scope, use it directly
+            function = scope[stmt.function_name]
+            args = [self.evaluate_expression(arg, scope) for arg in stmt.arguments]
+            return function(*args)
+        
+        # Then check if it's a variable holding a function (e.g., lambda)
+        function_var = scope.get(stmt.function_name)
+        if isinstance(function_var, dict) and 'lambda' in function_var:
+            function = function_var['lambda']
+        else:
+            # Then check if it's a registered function
+            function = self.functions.get(stmt.function_name)
+            if not function:
+                # Check call stack for function parameters
+                for call_scope in reversed(self.call_stack):
+                    if stmt.function_name in call_scope and callable(call_scope[stmt.function_name]):
+                        args = [self.evaluate_expression(arg, scope) for arg in stmt.arguments]
+                        return call_scope[stmt.function_name](*args)
+                
+                logger.error("Undefined function '%s'.", stmt.function_name)
+                raise RuntimeError(f"Undefined function '{stmt.function_name}'.")
 
         # Create new scope and set up parameters
         new_scope = {}
-        for param, arg_expr in zip(function.parameters, stmt.arguments):
-            arg_value = self.evaluate_expression(arg_expr, scope)
-            new_scope[param] = arg_value
+        
+        # Handle named arguments and regular arguments
+        named_args = {}
+        positional_args = []
+        
+        for arg in stmt.arguments:
+            if isinstance(arg, NamedArgument):
+                named_args[arg.name] = self.evaluate_expression(arg.value, scope)
+            else:
+                # If the argument is an identifier, it might be a function reference
+                if isinstance(arg, Identifier):
+                    # Check if it's a function in the functions dictionary
+                    if arg.name in self.functions:
+                        func_def = self.functions[arg.name]
+                        def callable_wrapper(*args):
+                            call_expr = FunctionCall(func_def.name, [Integer(arg) if isinstance(arg, (int, float)) else arg for arg in args])
+                            return self.execute_functioncall(call_expr, scope)
+                        positional_args.append(callable_wrapper)
+                    else:
+                        # Otherwise evaluate it normally
+                        positional_args.append(self.evaluate_expression(arg, scope))
+                else:
+                    positional_args.append(self.evaluate_expression(arg, scope))
+
+        # Map arguments to parameters
+        for i, param in enumerate(function.parameters):
+            if param in named_args:
+                new_scope[param] = named_args[param]
+            elif i < len(positional_args):
+                new_scope[param] = positional_args[i]
+            else:
+                logger.error("Missing argument for parameter '%s'.", param)
+                raise RuntimeError(f"Missing argument for parameter '{param}'.")
 
         # Push scope to call stack
         self.call_stack.append(new_scope)
@@ -190,6 +260,34 @@ class Executor:
             # Always pop the scope after execution
             self.call_stack.pop()
 
+    def execute_lambdafunction(self, stmt: LambdaFunction, scope: Dict[str, Any]):
+        """Execute a lambda function definition."""
+        # Store lambda function in current scope
+        lambda_func = {
+            'parameters': stmt.parameters,
+            'body': stmt.body,
+            'closure': dict(scope)  # Capture current scope for closure
+        }
+        # Mark it as a lambda
+        # scope[stmt.name] = {
+        #     'lambda': lambda_func
+        # }
+        # logger.debug("Registered lambda function '%s' in scope.", stmt.name)
+        return lambda_func
+
+    def execute_functioncomposition(self, stmt: FunctionComposition, scope: Dict[str, Any]):
+        """Execute function composition."""
+        def composed_function(*args):
+            result = args[0] if args else None
+            for func in stmt.functions[1:]:
+                result = self.evaluate_expression(func, scope)(result)
+            return result
+        return composed_function
+
+    def execute_point(self, stmt: Point, scope: Dict[str, Any]):
+        """Execute a point constructor."""
+        return self.evaluate_point(stmt, scope)
+
     def evaluate_expression(self, expr: ASTNode, scope: Dict[str, Any]) -> Any:
         """Evaluate an expression node and return its value."""
         method_name = f"evaluate_{expr.__class__.__name__.lower()}"
@@ -202,23 +300,8 @@ class Executor:
         raise NotImplementedError(f"No evaluate method defined for {type(expr).__name__}")
 
     def evaluate_functioncall(self, expr: FunctionCall, scope: Dict[str, Any]) -> Any:
-        """Evaluate a function call expression by executing it.
-        
-        Args:
-            expr: The FunctionCall AST node to evaluate
-            scope: The current variable scope
-            
-        Returns:
-            The return value from executing the function
-            
-        Raises:
-            RuntimeError: If the function is undefined
-        """
-        try:
-            return self.execute_functioncall(expr, scope)
-        except RuntimeError as e:
-            logger.error("Error evaluating function call: %s", e)
-            raise
+        """Evaluate a function call expression."""
+        return self.execute_functioncall(expr, scope)
 
     def evaluate_binaryoperation(self, expr: BinaryOperation, scope: Dict[str, Any]) -> Any:
         left = self.evaluate_expression(expr.left, scope)
@@ -229,6 +312,9 @@ class Executor:
 
         try:
             if operator == '+':
+                # Handle string concatenation with non-string types
+                if isinstance(left, str) or isinstance(right, str):
+                    return str(left) + str(right)
                 return left + right
             elif operator == '-':
                 return left - right
@@ -262,6 +348,11 @@ class Executor:
                 return left and right
             elif operator == '||':
                 return left or right
+            elif operator == '|>':
+                # Handle function composition
+                if not callable(right):
+                    raise TypeError(f"Right operand of |> must be a function, got {type(right)}")
+                return right(left)
             else:
                 logger.error("Unsupported operator '%s'.", operator)
                 raise TypeError(f"Unsupported operator '{operator}'.")
@@ -275,7 +366,8 @@ class Executor:
         return expr.value
 
     def evaluate_identifier(self, expr: Identifier, scope: Dict[str, Any]) -> Any:
-        """Modified to handle both typed and untyped variables"""
+        """Evaluate an identifier which could be a variable or function reference."""
+        # First check if it's a variable in the current scope or call stack
         value = scope.get(expr.name)
         
         # Check call stack if not found in current scope
@@ -285,15 +377,28 @@ class Executor:
                     value = s[expr.name]
                     break
         
-        if value is None:
-            logger.error("Undefined variable '%s'.", expr.name)
-            raise Exception(f"Undefined variable '{expr.name}'.")
+        # If found as a variable, return its value
+        if value is not None:
+            # If the value is stored with type information, return the actual value
+            if isinstance(value, dict) and 'value' in value:
+                return value['value']
+            return value
         
-        # If the value is stored with type information, return the actual value
-        if isinstance(value, dict) and 'value' in value:
-            return value['value']
+        # If not found as a variable, check if it's a function reference
+        if expr.name in self.functions:
+            # Return a callable that will execute the function when called
+            func_def = self.functions[expr.name]
+            def callable_function(*args):
+                call_expr = FunctionCall(expr.name, [Integer(arg) if isinstance(arg, (int, float)) else arg for arg in args])
+                return self.execute_functioncall(call_expr, scope)
+            
+            # Add a custom __repr__ to the callable_function
+            callable_function.__repr__ = lambda : f"<function {func_def.name}({', '.join(func_def.parameters)})>"
+            return callable_function
         
-        return value
+        # If not found anywhere, raise an error
+        logger.error("Undefined identifier '%s'.", expr.name)
+        raise RuntimeError(f"Undefined identifier '{expr.name}'.")
 
     def evaluate_integer(self, expr: Integer, scope: Dict[str, Any]) -> int:
         return expr.value
@@ -376,27 +481,44 @@ class Executor:
         raise ControlFlowException(stmt.statement_type, value)
 
     def execute_incrementdecrement(self, stmt: IncrementDecrement, scope: Dict[str, Any]):
-        """Execute an increment/decrement operation."""
+        """Execute an increment/decrement operation.
+        
+        For prefix operations (++i or --i), increment/decrement first and return new value
+        For postfix operations (i++ or i--), return original value and then increment/decrement
+        """
         try:
+            # Get the current value
             current_value = self.evaluate_expression(Identifier(stmt.variable), scope)
             if not isinstance(current_value, (int, float)):
                 raise TypeError(f"Cannot {stmt.operation} non-numeric value")
             
+            # Calculate the new value
             new_value = current_value + (1 if stmt.operation == "++" else -1)
             
-            # Update the value in the appropriate scope
+            # Find the appropriate scope to update
+            target_scope = None
             if stmt.variable in scope:
-                scope[stmt.variable] = new_value
+                target_scope = scope
             elif self.call_stack:
                 # Search call stack for the variable
                 for s in reversed(self.call_stack):
                     if stmt.variable in s:
-                        s[stmt.variable] = new_value
+                        target_scope = s
                         break
+            
+            if target_scope is None:
+                raise RuntimeError(f"Variable '{stmt.variable}' not found in any scope")
+            
+            # Update the value in the appropriate scope
+            target_scope[stmt.variable] = new_value
             
             logger.debug("Executed %s%s: %d -> %d", 
                         stmt.variable, stmt.operation, current_value, new_value)
+            
+            # For prefix operations (++i), return the new value
+            # For postfix operations (i++), return the original value
             return new_value if stmt.is_prefix else current_value
+            
         except Exception as e:
             logger.error("Error in increment/decrement operation: %s", str(e))
             raise
@@ -424,8 +546,25 @@ class Executor:
                 self.execute_statement(body_stmt, scope)
 
     def execute_movemouse(self, stmt: MoveMouse, scope: Dict[str, Any]):
-        x = self.evaluate_expression(stmt.x, scope)
-        y = self.evaluate_expression(stmt.y, scope)
+        """Execute a mouse movement statement."""
+        if stmt.variable:
+            # If we have a point variable or direct point
+            point = self.evaluate_expression(stmt.variable, scope)
+            if isinstance(point, Point):
+                # Get the actual numeric values from the point
+                x = self.evaluate_expression(point.x, scope)
+                y = self.evaluate_expression(point.y, scope)
+            else:
+                raise TypeError(f"Expected Point type, got {type(point)}")
+        else:
+            # Otherwise evaluate both x and y coordinates
+            x = self.evaluate_expression(stmt.x, scope)
+            y = self.evaluate_expression(stmt.y, scope)
+
+        # Convert to integers if needed
+        x = int(x) if isinstance(x, float) else x
+        y = int(y) if isinstance(y, float) else y
+
         self.mouse_manager.move(x, y)
         self.log_execution(f"Executed MoveMouse to ({x}, {y}).")
 
@@ -445,3 +584,137 @@ class Executor:
         else:
             raise RuntimeError(f"Window '{window_name}' does not exist.")
 
+    def evaluate_incrementdecrement(self, expr: IncrementDecrement, scope: Dict[str, Any]) -> Any:
+        """Evaluate an increment/decrement operation in an expression context.
+        
+        For prefix operations (++i), increment/decrement first and return new value
+        For postfix operations (i++), return original value and then increment/decrement
+        """
+        try:
+            # Get the current value
+            current_value = self.evaluate_expression(Identifier(expr.variable), scope)
+            if not isinstance(current_value, (int, float)):
+                raise TypeError(f"Cannot {expr.operation} non-numeric value")
+            
+            # Calculate the new value
+            new_value = current_value + (1 if expr.operation == "++" else -1)
+            
+            # Find the appropriate scope to update
+            target_scope = None
+            if expr.variable in scope:
+                target_scope = scope
+            elif self.call_stack:
+                # Search call stack for the variable
+                for s in reversed(self.call_stack):
+                    if expr.variable in s:
+                        target_scope = s
+                        break
+            
+            if target_scope is None:
+                raise RuntimeError(f"Variable '{expr.variable}' not found in any scope")
+            
+            # Update the value in the appropriate scope
+            target_scope[expr.variable] = new_value
+            
+            logger.debug("Evaluated %s%s: %d -> %d", 
+                        expr.variable, expr.operation, current_value, new_value)
+            
+            # For prefix operations (++i), return the new value
+            # For postfix operations (i++), return the original value
+            return new_value if expr.is_prefix else current_value
+            
+        except Exception as e:
+            logger.error("Error in increment/decrement operation: %s", str(e))
+            raise
+
+    def evaluate_point(self, expr: Point, scope: Dict[str, Any]) -> Point:
+        """Evaluate a Point expression."""
+        logger.debug("Evaluating Point with x=%s and y=%s", expr.x, expr.y)
+        x = self.evaluate_expression(expr.x, scope)
+        y = self.evaluate_expression(expr.y, scope)
+        # Return a new Point with the evaluated values
+        return Point(Integer(x), Integer(y))
+
+    def evaluate_lambdafunction(self, expr: LambdaFunction, scope: Dict[str, Any]) -> Any:
+        """Evaluate a lambda function expression."""
+        # Lambda functions are evaluated when they are called, not when they are defined
+        # Here we return a callable that will execute the lambda function when called
+        
+        lambda_func = {
+            'parameters': expr.parameters,
+            'body': expr.body,
+            'closure': dict(scope)  # Capture current scope for closure
+        }
+        
+        def callable_lambda(*args):
+            # Create a new scope for the lambda function
+            lambda_scope = dict(lambda_func['closure'])  # Copy the closure
+            
+            # Map arguments to parameters
+            for i, param in enumerate(lambda_func['parameters']):
+                if i < len(args):
+                    lambda_scope[param] = args[i]
+                else:
+                    raise RuntimeError(f"Missing argument for parameter '{param}'.")
+            
+            # Execute the lambda function body
+            result = None
+            for stmt in lambda_func['body']:
+                try:
+                    result = self.execute_statement(stmt, lambda_scope)
+                except ControlFlowException as cf:
+                    if cf.statement_type == "RETURN":
+                        return cf.value
+                    else:
+                        raise
+            return result
+
+        callable_lambda.__repr__ = lambda : f"<lambda ({', '.join(expr.parameters)})>"
+        
+        return callable_lambda
+
+
+
+
+
+
+    def execute_functiondefinition(self, stmt: FunctionDefinition, scope: Dict[str, Any]):
+        """Execute a function definition by registering it in the executor.
+        
+        Args:
+            stmt (FunctionDefinition): The function definition AST node
+            scope (Dict[str, Any]): The current scope
+        """
+        logger.debug("Registering function '%s' with parameters %s", 
+                    stmt.name, stmt.parameters)
+        
+        # Check if function already exists
+        if stmt.name in self.functions:
+            logger.error("Function '%s' is already defined.", stmt.name)
+            raise RuntimeError(f"Function '{stmt.name}' is already defined.")
+        
+        # Register the function in the executor's function dictionary
+        self.functions[stmt.name] = stmt
+        
+        logger.debug("Successfully registered function '%s'", stmt.name)
+
+    def evaluate_functiondefinition(self, expr: FunctionDefinition, scope: Dict[str, Any]) -> Any:
+        """Evaluate a function definition expression.
+        
+        When a function definition is evaluated as an expression (e.g., in an assignment),
+        it returns a callable that wraps the function.
+        
+        Args:
+            expr (FunctionDefinition): The function definition AST node
+            scope (Dict[str, Any]): The current scope
+        
+        Returns:
+            callable: A callable wrapper for the function
+        """
+        logger.debug("Evaluating function definition '%s' as expression", expr.name)
+        
+        # Register the function if not already registered
+        if expr.name not in self.functions:
+            self.execute_functiondefinition(expr, scope)
+
+        return self.functions[expr.name]

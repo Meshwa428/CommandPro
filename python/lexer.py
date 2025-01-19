@@ -1,7 +1,7 @@
 import re
 import logging
-from errors import InvalidNumberError, SyntaxError
-from ast_nodes import Token
+from .errors import InvalidNumberError, SyntaxError
+from .ast_nodes import Token
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
@@ -12,6 +12,7 @@ class Lexer:
         self.keywords = {
             "SET",
             "DEFUN",
+            "LAMBDA",
             "IF",
             "THEN", 
             "ELSE",
@@ -22,7 +23,8 @@ class Lexer:
             "BREAK", 
             "CONTINUE",
             "YIELD",
-            "PASS"
+            "PASS",
+            "POINT"
         }
 
         self.loop_keywords = {
@@ -161,10 +163,10 @@ class Lexer:
             
             # Literals
             "FLOAT": r"\b\d+\.\d+\b",
-            "INTEGER": r"\b\d+\b",
+            "INT": r"\b\d+\b",
             "TIME": r"\b\d+(?:\.\d+)?[smh]\b|\b\d+ms\b", 
-            "STRING": r'"[^"]*"',
-            "BOOLEAN": r"\b(?:TRUE|FALSE|true|false)\b",
+            "STR": r'(["\'])(?:\\.|[^\\\1])*?\1',
+            "BOOL": r"\b(?:TRUE|FALSE|true|false)\b",
 
             # Increment/decrement operators
             "INCREMENT": r"\+\+",
@@ -174,11 +176,10 @@ class Lexer:
             "ID": r"\b[a-zA-Z_][a-zA-Z0-9_]*\b",
 
             # Operators (order matters - longer patterns first)
-            "COMP_OP": r"===|!==|==|!=|<=|>=|<|>",
-            "OP_ASSIGN": r"\+=|-=|\*=|/=|%=|&=|\^=|<<=|>>=",
+            "COMP_OP": r"===|!==|==|!=|<=|>=|<|>|\|>",
+            "OP_ASSIGN": r"\+=|-=|\*=|/=|%=|&=|\^=|<<=|>>=|=",
             "BITWISE_OP": r"\||&|\^|~|<<|>>",
             "OP": r"\*\*|//|[+\-*/]",  # Added ** and // as single operators
-            "ASSIGN": r"=",
             "TERMINATOR": r";",
 
             # Parentheses
@@ -191,6 +192,9 @@ class Lexer:
 
             # Commas
             "COMMA": r",",
+
+            # Type Hint Token
+            "TYPE_HINT": r":",
 
             # Newlines and whitespace
             "NEWLINE": r"\n",
@@ -236,12 +240,12 @@ class Lexer:
                 except ValueError:
                     logger.error("Invalid FLOAT value '%s' at line %d.", value, self.line_num)
                     raise InvalidNumberError(f"Invalid FLOAT value '{value}' at line {self.line_num}")
-            elif kind == "INTEGER":
+            elif kind == "INT":
                 value = int(value)
             elif kind == "TIME":
                 value = self.process_time_with_unit(value)
                 kind = "TIME"
-            elif kind == "BOOLEAN":
+            elif kind == "BOOL":
                 value = value.upper() == "TRUE"  # Convert to Python boolean, case-insensitive
             elif kind == "MISMATCH":
                 error_msg = f"Unexpected character at line {self.line_num}: {value}"

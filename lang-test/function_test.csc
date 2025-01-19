@@ -19,6 +19,6 @@ DEFUN MoveAndWait_new_syntax(cordinates, waitTime) {
 MoveAndWait(13, 20, 14s);
 
 SET cordinates = POINT(400, 199);
-MoveAndWait_new_syntax(cordinates, 15s);
+MoveAndWait_new_syntax(cordinates=cordinates, waitTime=15s);
 
 getUserInfo();

@@ -1,20 +1,20 @@
 import logging
-from ast_nodes import (
+from .ast_nodes import ( Token,
     Program, FunctionDefinition, FunctionCall, Assignment, PrintStatement,
     WaitStatement, MoveMouse, KeyOperation, ButtonOperation,
     BinaryOperation, Identifier, Integer, Time, String, Boolean, Float,
     ASTNode, WhileLoop, RepeatLoop, ControlStatement, IncrementDecrement,
-    IfStatement, MoveWindow, FocusWindow, WindowExists
+    IfStatement, MoveWindow, FocusWindow, WindowExists, LambdaFunction, Point,
+    FunctionComposition, NamedArgument
 )
 from typing import List, Optional, Dict, Any
-from errors import SyntaxError
-from ast_nodes import Token
+from .errors import SyntaxError
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
 
 class Parser:
-    def __init__(self, global_scope: Dict[str, Any], functions: Dict[str, FunctionDefinition]):
+    def __init__(self):
         self.pos = 0
         self.precedence = {
             'OR': 1, 
@@ -35,15 +35,17 @@ class Parser:
             'functions': {}
         }]  # Initialize with global scope
         self.data_types = {
-            'INTEGER': int,
+            'INT': int,
             'FLOAT': float,
-            'STRING': str,
+            'STR': str,
             'TIME': 'time',  # Special handling for time values
-            'BOOLEAN': bool
+            'BOOL': bool,
+            'POINT': 'point'
         }
-        self.global_scope = global_scope
-        self.functions = functions
+        self.global_scope = dict()
+        self.functions = dict()
         self.current_context = []  # Stack to track current context (LOOP, FUNCTION)
+        self.defined_functions = set()  # Initialize a set to track defined functions
         
 
     def peek(self):
@@ -75,6 +77,7 @@ class Parser:
     def parse(self, tokens: List[Token]) -> Program:
         """Parse the tokens and return an abstract syntax tree (AST)."""
         self.tokens = tokens
+        self.pos = 0
         logger.debug("Parser initialized with %d tokens.", len(tokens))
         logger.info("Starting parse process.")
         statements = []
@@ -141,7 +144,7 @@ class Parser:
                 logger.error(error_msg)
                 raise SyntaxError(error_msg)
             return self.parse_control_statement()
-        
+
         elif token.kind == "KEYWORD" and token.value == "PASS":
             return self.parse_control_statement()
 
@@ -155,13 +158,15 @@ class Parser:
                         self.consume("TERMINATOR")
                     return stmt
                 elif next_token.kind == "L_PAREN":
-                    return self.parse_function_call()
-            
+                    stmt = self.parse_function_call()
+                    if self.peek().kind == "TERMINATOR":
+                        self.consume("TERMINATOR")
+                    return stmt
+
             error_msg = f"Unexpected ID token '{token.value}' without context at line {token.line}"
             logger.error(error_msg)
             raise SyntaxError(error_msg)
-        
-        # implementing pre-increment and pre-decrement
+
         elif token.kind in ["INCREMENT", "DECREMENT"]:
             return self.parse_increment_decrement()
 
@@ -196,6 +201,18 @@ class Parser:
         ):
             return self.parse_button_operation()
 
+        elif token.kind == "KEYWORD" and token.value == "LAMBDA":
+            lambda_expr = self.parse_lambda_function()
+            if self.peek().kind == "TERMINATOR":
+                self.consume("TERMINATOR")
+            return lambda_expr
+
+        elif token.kind == "KEYWORD" and token.value == "POINT":
+            point_expr = self.parse_point()
+            if self.peek().kind == "TERMINATOR":
+                self.consume("TERMINATOR")
+            return point_expr
+
         else:
             error_msg = f"Unexpected token: {token.kind} with value '{token.value}' at line {token.line}"
             logger.error(error_msg)
@@ -207,29 +224,35 @@ class Parser:
         self.consume("KEYWORD")  # Consume DEFUN
         function_name_token = self.consume("ID")
         function_name = function_name_token.value
+
+        # Register the function name in defined_functions
+        self.defined_functions.add(function_name)
+        logger.debug("Registered function '%s' in defined_functions.", function_name)
+
+        # Parse parameters
+        if self.peek().kind != "L_PAREN":
+            error_msg = f"Expected '(' after function name at line {self.peek().line}"
+            logger.error(error_msg)
+            raise SyntaxError(error_msg)
+        
         self.consume("L_PAREN")
-        parameters = self.parse_function_parameters()
+        parameters = []
+        if self.peek().kind != "R_PAREN":
+            parameters.append(self.consume("ID").value)
+            while self.peek().kind == "COMMA":
+                self.consume("COMMA")
+                parameters.append(self.consume("ID").value)
         self.consume("R_PAREN")
         self.consume("L_BRACE")
 
-        # Register function in the current scope
-        current_scope = self.scope_stack[-1]
-        if function_name in current_scope['functions']:
-            error_msg = f"Function '{function_name}' already defined in the current scope at line {function_name_token.line}"
-            logger.error(error_msg)
-            raise SyntaxError(error_msg)
-        current_scope['functions'][function_name] = {
-            'parameters': parameters,
-            'body_start_pos': self.pos  # Could store body tokens if needed
-        }
-        logger.debug("Registered function '%s' with parameters %s.", function_name, parameters)
-
         # Enter new scope for function body
-        self.scope_stack.append({
-            'variables': {param: 'parameter' for param in parameters},
+        # Add parameters as variables in the local scope
+        new_scope = {
+            'variables': {param: {'type': None, 'is_parameter': True} for param in parameters},
             'functions': {}
-        })
-        logger.debug("Entered new scope for function '%s'.", function_name)
+        }
+        self.scope_stack.append(new_scope)
+        logger.debug("Entered new scope for function '%s' with parameters.", function_name)
 
         # Parse function body
         body = []
@@ -239,6 +262,9 @@ class Parser:
                 body.append(stmt)
 
         self.consume("R_BRACE")
+
+        if self.peek().kind == "TERMINATOR":
+            self.consume("TERMINATOR")
 
         # Exit function scope
         self.scope_stack.pop()
@@ -278,14 +304,30 @@ class Parser:
         return parameters
 
     def parse_function_arguments(self) -> List[ASTNode]:
-        """Parse the arguments passed to a function call."""
+        """Parse the arguments passed to a function call, including named arguments."""
         logger.debug("Parsing function call arguments.")
         arguments = []
         if self.peek().kind != "R_PAREN":
-            arguments.append(self.parse_expression())
+            # Check if it's a named argument
+            if self.peek().kind == "ID" and self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].value == "=":
+                name = self.consume("ID").value
+                self.consume("OP_ASSIGN")  # Consume '='
+                value = self.parse_expression()
+                arguments.append(NamedArgument(name, value))
+            else:
+                arguments.append(self.parse_expression())
+
             while self.peek().value == ",":
                 self.consume("COMMA")
-                arguments.append(self.parse_expression())
+                # Check for named argument after comma
+                if self.peek().kind == "ID" and self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].value == "=":
+                    name = self.consume("ID").value
+                    self.consume("OP_ASSIGN")  # Consume '='
+                    value = self.parse_expression()
+                    arguments.append(NamedArgument(name, value))
+                else:
+                    arguments.append(self.parse_expression())
+
         logger.debug("Parsed arguments: %s", arguments)
         return arguments
 
@@ -303,9 +345,18 @@ class Parser:
         existing_var = current_scope['variables'].get(var_name, {})
         existing_type = existing_var.get('type') if isinstance(existing_var, dict) else None
         
-        # Look ahead for type declaration
+        # Look ahead for type hint
         var_type = None
-        if self.peek().kind == "KEYWORD" and self.peek().value == "AS":
+        if self.peek().kind == "TYPE_HINT":
+            self.consume("TYPE_HINT") # consume ':'
+            type_token = self.consume("ID")
+            if type_token.value.upper() not in self.data_types:
+                error_msg = f"Invalid type '{type_token.value}' at line {type_token.line}"
+                logger.error(error_msg)
+                raise SyntaxError(error_msg)
+            var_type = type_token.value.upper()
+
+        elif self.peek().kind == "KEYWORD" and self.peek().value == "AS":
             self.consume("KEYWORD")  # Consume AS
             type_token = self.consume("ID")
             if type_token.value not in self.data_types:
@@ -313,12 +364,20 @@ class Parser:
                 logger.error(error_msg)
                 raise SyntaxError(error_msg)
             var_type = type_token.value
+
         elif existing_type:  # If variable exists and was previously typed
             var_type = existing_type
-        
-        self.consume("ASSIGN")
+
+        self.consume("OP_ASSIGN")
         expr = self.parse_expression()
-        self.consume("TERMINATOR")
+        
+        # Infer type for point
+        if isinstance(expr, Point) and not var_type:
+            var_type = "POINT"
+
+        # Only consume terminator if not at the end of a block
+        if self.peek().kind == "TERMINATOR":
+            self.consume("TERMINATOR")
         
         # Register variable in current scope
         current_scope['variables'][var_name] = {
@@ -337,7 +396,7 @@ class Parser:
         print_type = print_token.value
         logger.debug("Parsing %s statement.", print_type)
 
-        expr = self.parse_expression()  # Allow expression handling
+        expr = self.parse_expression()  # Expression parsing now handles increment/decrement
         self.consume("TERMINATOR")
 
         logger.debug("Parsed print statement of type '%s' with expression '%s'.", print_type, expr)
@@ -364,6 +423,8 @@ class Parser:
         # Expect MOUSE keyword
         if self.peek().value == "MOUSE":
             self.consume("KEYWORD")  # Consume MOUSE
+        elif self.peek().value == "WINDOW":
+            self.consume("KEYWORD")
         else:
             error_msg = f"Expected 'MOUSE' after MOVE, got {self.peek().value} at line {self.peek().line}"
             logger.error(error_msg)
@@ -419,7 +480,17 @@ class Parser:
         """Parse an expression, handling operators based on precedence."""
         logger.debug("Parsing expression.")
         try:
-            return self.parse_expression_precedence(0)
+            # Parse the initial expression
+            left = self.parse_expression_precedence(0)
+            
+            # Handle top-level function composition
+            while self.peek().kind == "COMP_OP" and self.peek().value == "|>":
+                op = self.consume("COMP_OP").value
+                right = self.parse_primary()  # Parse the function reference
+                left = BinaryOperation(op, left, right)
+                logger.debug("Parsed top-level function composition: %s |> %s", left, right)
+            
+            return left
         except SyntaxError as e:
             if "at line" in str(e):
                 error_msg = f"{e}"
@@ -446,12 +517,23 @@ class Parser:
                 right = self.parse_expression_precedence(next_min_prec)
                 left = BinaryOperation(op, left, right)
                 logger.debug("Parsed binary operation: %s %s %s", left, op, right)
-            # Handle comparison operations
+            # Handle comparison operations and function composition
             elif current.kind == "COMP_OP":
                 op = self.consume("COMP_OP").value
-                right = self.parse_expression()
-                left = BinaryOperation(op, left, right)
-                logger.debug("Parsed binary operation: %s %s %s", left, op, right)
+                if op == "|>":
+                    # Handle function composition
+                    right = self.parse_primary()  # Parse the function reference
+                    left = BinaryOperation(op, left, right)
+                    logger.debug("Parsed function composition: %s |> %s", left, right)
+                else:
+                    right = self.parse_expression()
+                    left = BinaryOperation(op, left, right)
+                    logger.debug("Parsed comparison operation: %s %s %s", left, op, right)
+            # Handle postfix increment/decrement
+            elif current.kind in ["INCREMENT", "DECREMENT"] and isinstance(left, Identifier):
+                op = self.consume(current.kind).value
+                left = IncrementDecrement(left.name, op, is_prefix=False)
+                logger.debug("Parsed postfix increment/decrement: %s%s", left.variable, op)
             else:
                 break
 
@@ -462,8 +544,8 @@ class Parser:
         token = self.peek()
         logger.debug("Parsing primary expression with token: %s", token)
 
-        if token.kind == "INTEGER":
-            self.consume("INTEGER")
+        if token.kind == "INT":
+            self.consume("INT")
             logger.debug("Parsed Integer: %d", token.value)
             return Integer(token.value)
         elif token.kind == "FLOAT":
@@ -475,24 +557,49 @@ class Parser:
             time_value, unit = token.value
             logger.debug("Parsed Time: %f %s", time_value, unit)
             return Time(time_value, unit)
-        elif token.kind == "STRING":
-            self.consume("STRING")
+        elif token.kind == "STR":
+            self.consume("STR")
             logger.debug("Parsed String: %s", token.value)
             return String(token.value)
-        elif token.kind == "BOOLEAN":
-            self.consume("BOOLEAN")
+        elif token.kind == "BOOL":
+            self.consume("BOOL")
             logger.debug("Parsed Boolean: %s", token.value)
             return Boolean(token.value)
-        elif token.kind == "ID":
-            # Check if the identifier is a function
-            if self.is_function(token.value):
-                return self.parse_function_call()
-            elif self.is_variable(token.value):
-                return self.parse_identifier_usage()
-            else:
-                error_msg = f"Undefined identifier '{token.value}' at line {token.line}"
+        elif token.kind == "KEYWORD" and token.value == "POINT":
+            return self.parse_point()
+        elif token.kind == "KEYWORD" and token.value == "LAMBDA":
+            return self.parse_lambda_function()
+        elif token.kind in ["INCREMENT", "DECREMENT"]:
+            # Handle prefix increment/decrement
+            op = self.consume(token.kind).value
+            var_token = self.consume("ID")
+            var_name = var_token.value
+
+            # Check if variable exists in any scope
+            if not self.is_variable(var_name):
+                error_msg = f"Undefined variable '{var_name}' at line {token.line}"
                 logger.error(error_msg)
                 raise SyntaxError(error_msg)
+
+            logger.debug("Parsed prefix increment/decrement: %s%s", op, var_name)
+            return IncrementDecrement(var_name, op, is_prefix=True)
+        elif token.kind == "ID":
+            # Look ahead for the next token
+            next_token = self.tokens[self.pos + 1] if self.pos + 1 < len(self.tokens) else None
+            
+            # Get the identifier
+            identifier = self.consume("ID").value
+            
+            # Check if it's a function call
+            if next_token and next_token.kind == "L_PAREN":
+                self.consume("L_PAREN")
+                arguments = self.parse_function_arguments()
+                self.consume("R_PAREN")
+                return FunctionCall(identifier, arguments)
+            
+            # Otherwise it's just an identifier (could be variable or function reference)
+            return Identifier(identifier)
+            
         elif token.kind == "L_PAREN":
             self.consume("L_PAREN")
             expr = self.parse_expression()
@@ -523,11 +630,19 @@ class Parser:
         return False
 
     def is_function(self, name: str) -> bool:
-        """Check if a function is defined in any accessible scope."""
-        for scope in reversed(self.scope_stack):
-            if name in scope['functions']:
-                logger.debug("Function '%s' found in scope.", name)
+        """Check if a function name is valid in the current context."""
+        # Check if it's a parameter in the current function scope
+        if len(self.scope_stack) > 1:
+            current_scope = self.scope_stack[-1]
+            if name in current_scope['variables'] and current_scope['variables'][name].get('is_parameter'):
+                logger.debug("Function '%s' found as parameter in current scope.", name)
                 return True
+
+        # Check if it's a function name that's been seen before in defined_functions or externally provided functions
+        if name in self.defined_functions or name in self.functions:
+            logger.debug("Function '%s' found in defined_functions or external functions.", name)
+            return True
+
         logger.debug("Function '%s' not found in any scope.", name)
         return False
 
@@ -579,11 +694,13 @@ class Parser:
 
         if keyword in ["RETURN", "YIELD"]:
             # Check if there's an expression after RETURN/YIELD
-            if self.peek().kind != "TERMINATOR":
+            if self.peek().kind != "TERMINATOR" and self.peek().kind != "R_BRACE":
                 value = self.parse_expression()
                 logger.debug("Parsed %s value: %s", keyword, value)
 
-        self.consume("TERMINATOR")
+        # Only consume terminator if not at the end of a block
+        if self.peek().kind == "TERMINATOR":
+            self.consume("TERMINATOR")
         logger.debug("Parsed control statement: %s with value: %s", keyword, value)
         
         if keyword == "PASS":
@@ -593,23 +710,25 @@ class Parser:
         return ControlStatement(keyword, value)
 
     def parse_increment_decrement(self) -> IncrementDecrement:
-        """Parse increment/decrement operations."""
+        """Parse increment/decrement operations in both prefix (++i) and postfix (i++) forms."""
         token = self.peek()
+        is_prefix = False
 
         if token.kind in ["INCREMENT", "DECREMENT"]:
             # Prefix notation (++i or --i)
+            is_prefix = True
             op = self.consume(token.kind).value
-
-            var_token = self.consume("ID").value
+            var_token = self.consume("ID")
+            var_name = var_token.value
 
             # Check if variable exists in any scope
-            if not self.is_variable(var_token):
-                error_msg = f"Undefined variable '{var_token}' at line {token.line}"
+            if not self.is_variable(var_name):
+                error_msg = f"Undefined variable '{var_name}' at line {token.line}"
                 logger.error(error_msg)
                 raise SyntaxError(error_msg)
 
-            logger.debug("Parsed prefix increment/decrement: %s%s", op, var_token)
-            return IncrementDecrement(var_token, op, is_prefix=True)
+            logger.debug("Parsed prefix increment/decrement: %s%s", op, var_name)
+            return IncrementDecrement(var_name, op, is_prefix)
 
         elif token.kind == "ID":
             # Postfix notation (i++ or i--)
@@ -629,7 +748,7 @@ class Parser:
 
             op = self.consume(op_token.kind).value
             logger.debug("Parsed postfix increment/decrement: %s%s", var_name, op)
-            return IncrementDecrement(var_name, op, is_prefix=False)
+            return IncrementDecrement(var_name, op, is_prefix)
 
         else:
             error_msg = f"Expected ID or increment/decrement operator, got {token.kind} at line {token.line}"
@@ -731,4 +850,98 @@ class Parser:
         error_msg = f"Expected window operation (EXISTS), got {self.peek().kind} at line {self.peek().line}"
         logger.error(error_msg)
         raise SyntaxError(error_msg)
+
+    def parse_lambda_function(self) -> LambdaFunction:
+        """Parse a lambda function definition."""
+        logger.debug("Parsing lambda function.")
+        self.consume("KEYWORD")  # Consume LAMBDA
+        self.consume("L_PAREN")
+        parameters = self.parse_function_parameters()
+        self.consume("R_PAREN")
+        self.consume("L_BRACE")
+
+        # Enter new scope for lambda body
+        new_scope = {
+            'variables': {param: {'type': None, 'is_parameter': True} for param in parameters},
+            'functions': {}
+        }
+        self.scope_stack.append(new_scope)
+        self.current_context.append("FUNCTION")  # Mark that we're in a function context
+
+        body = []
+        while self.peek().kind != "R_BRACE" and self.peek().kind != "EOF":
+            stmt = self.parse_statement()
+            if stmt is not None:
+                body.append(stmt)
+
+        self.consume("R_BRACE")
+
+        # Exit lambda scope and function context
+        self.scope_stack.pop()
+        self.current_context.pop()
+
+        return LambdaFunction(parameters, body)
+
+    def parse_point(self) -> Point:
+        """Parse a point constructor."""
+        logger.debug("Parsing point constructor.")
+        self.consume("KEYWORD")  # Consume POINT
+        self.consume("L_PAREN")
+        x = self.parse_expression()
+        self.consume("COMMA")
+        y = self.parse_expression()
+        self.consume("R_PAREN")
+        return Point(x, y)
+
+    def parse_function_composition(self) -> FunctionComposition:
+        """Parse function composition using the '|>' operator."""
+        logger.debug("Parsing function composition.")
+        functions = []
+        functions.append(self.parse_primary())
+
+        while self.peek().kind == "OP" and self.peek().value == "|>":
+            self.consume("OP")  # Consume '|>'
+            functions.append(self.parse_primary())
+
+        return FunctionComposition(functions)
+
+    def parse_move_mouse(self) -> MoveMouse:
+        """Parse a mouse movement statement."""
+        logger.debug("Parsing MOVE MOUSE statement.")
+        # Expect MOUSE keyword
+        if self.peek().kind == "KEYWORD" and self.peek().value == "MOUSE":
+            self.consume("KEYWORD")  # Consume MOUSE
+        else:
+            error_msg = f"Expected 'MOUSE' after MOVE, got {self.peek().value} at line {self.peek().line}"
+            logger.error(error_msg)
+            raise SyntaxError(error_msg)
+
+        if self.peek().kind == "KEYWORD_TARGET" and self.peek().value == "TO":
+            self.consume("KEYWORD_TARGET")  # Consume TO
+        else:
+            error_msg = f"Expected 'TO' after MOUSE, got {self.peek().value} at line {self.peek().line}"
+            logger.error(error_msg)
+            raise SyntaxError(error_msg)
+
+        # Parse coordinates or point
+        if self.peek().kind == "ID":
+            # Handle point variable
+            point_var = self.parse_expression()  # This will return an Identifier node
+            self.consume("TERMINATOR")
+            return MoveMouse(variable = point_var)  # Pass the identifier directly
+
+        if self.peek().kind == "KEYWORD" and self.peek().value == "POINT":
+            # Handle direct point constructor
+            point = self.parse_point()
+            self.consume("TERMINATOR")
+            return MoveMouse(variable = point)  # Pass the point directly
+        else:
+            # Parse regular coordinates
+            self.consume("L_PAREN")
+            x = self.parse_expression()
+            self.consume("COMMA")
+            y = self.parse_expression()
+            self.consume("R_PAREN")
+            self.consume("TERMINATOR")
+            return MoveMouse(x=x, y=y)
 

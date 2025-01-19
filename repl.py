@@ -1,11 +1,11 @@
 import json
 import logging
-from lexer import Lexer
-from parser import Parser
-from executor import Executor
+from python import Lexer
+from python import Parser
+from python import Executor
 from argparse import ArgumentParser
-from ast_nodes import Program
-from errors import *
+from python import Program
+from python.errors import *
 
 def setup_logging(enable_logging=False, log_level=logging.DEBUG, log_file="app.log"):
     """Configure logging for the application."""
@@ -49,7 +49,7 @@ def execute_from_file(file_path, save_ast_path=None, verbose=False):
         lexer = Lexer(code)
         tokens = lexer.tokenize()
         executor = Executor(verbose=verbose)
-        parser = Parser(executor.global_scope, executor.functions)
+        parser = Parser()
         ast = parser.parse(tokens)
 
         if save_ast_path:
@@ -76,15 +76,61 @@ def interactive_mode(save_ast_path=None, verbose=False):
     print("Welcome to the CommandPro REPL. Type 'exit;' to quit.")
     buffer = ""
     prompt = ">>> "
-    brace_balance = 0
+    
+    # Track different types of brackets for better balance checking
+    brackets = {
+        'curly': 0,    # {}
+        'round': 0,    # ()
+        'square': 0    # []
+    }
     
     # Initialize cumulative program for AST
     cumulative_program = Program([])
+    parser = Parser()
+
+    def update_bracket_count(line):
+        """Update bracket counts for a line of code."""
+        brackets['curly'] += line.count('{') - line.count('}')
+        brackets['round'] += line.count('(') - line.count(')')
+        brackets['square'] += line.count('[') - line.count(']')
+        
+    def is_complete_statement(buffer):
+        """Check if the current buffer contains a complete statement."""
+        if not buffer.strip():
+            return True
+            
+        if buffer.strip().endswith(';'):
+            return all(count == 0 for count in brackets.values())
+            
+        if buffer.strip().endswith('}'):
+            return all(count == 0 for count in brackets.values())
+            
+        return False
+
+    def update_ast(new_ast):
+        """Update the cumulative AST and save it if needed."""
+        nonlocal cumulative_program
+        
+        # Add new statements to cumulative program
+        if isinstance(new_ast, Program):
+            cumulative_program.statements.extend(new_ast.statements)
+        else:
+            cumulative_program.statements.append(new_ast)
+
+        # Save updated AST immediately if path is provided
+        if save_ast_path:
+            try:
+                save_ast_to_json(cumulative_program.to_dict(), save_ast_path)
+                logger.debug(f"Updated AST saved to {save_ast_path}")
+            except Exception as e:
+                logger.error(f"Failed to save AST: {e}")
+                print(f"Warning: Failed to save AST: {e}")
 
     while True:
         try:
             print(prompt, end="")
             line = input()
+            
             if not line.strip():
                 continue
 
@@ -94,40 +140,42 @@ def interactive_mode(save_ast_path=None, verbose=False):
                 break
 
             buffer += line + "\n"
-            brace_balance += line.count('{') - line.count('}')
+            update_bracket_count(line)
 
-            if brace_balance > 0:
-                prompt = "... "
-                continue
-            elif '{' in buffer and brace_balance < 0:
-                logger.error("Unbalanced braces detected.")
-                print("Syntax Error: Unbalanced braces.")
+            if any(count < 0 for count in brackets.values()):
+                logger.error("Unmatched closing bracket detected.")
+                print("Syntax Error: Unmatched closing bracket.")
                 buffer = ""
-                brace_balance = 0
+                brackets = dict.fromkeys(brackets, 0)
                 prompt = ">>> "
                 continue
-            elif brace_balance != 0:
+
+            if not is_complete_statement(buffer):
                 prompt = "... "
                 continue
 
+            prompt = ">>> "
+
             try:
-                lexer = Lexer(buffer)
+                code_to_execute = buffer.rstrip()
+                
+                if not code_to_execute:
+                    buffer = ""
+                    continue
+
+                # First try to parse without executing to ensure it's valid
+                lexer = Lexer(code_to_execute)
                 tokens = lexer.tokenize()
-                parser = Parser(executor.global_scope, executor.functions)
-                ast = parser.parse(tokens)
-                executor.execute(ast)
+                new_ast = parser.parse(tokens)
+                # print("Tokens:", tokens)
+                # print("AST:", new_ast)
+                
+                # If parsing succeeds, update the cumulative AST immediately
+                update_ast(new_ast)
+                
+                # Then execute the code
+                executor.execute(new_ast)
                 logger.info("Execution completed successfully.")
-
-                # Add the new statements to the cumulative program
-                if isinstance(ast, Program):
-                    cumulative_program.statements.extend(ast.statements)
-                else:
-                    cumulative_program.statements.append(ast)
-
-                # Save cumulative AST after execution if path is provided
-                if save_ast_path:
-                    save_ast_to_json(cumulative_program.to_dict(), save_ast_path)
-                    logger.debug(f"Cumulative AST saved to {save_ast_path}")
 
             except SyntaxError as e:
                 logger.exception("Parsing failed with error: %s", e)
@@ -137,7 +185,7 @@ def interactive_mode(save_ast_path=None, verbose=False):
                 print(f"{type(e).__name__}: {e}")
 
             buffer = ""
-            prompt = ">>> "
+            brackets = dict.fromkeys(brackets, 0)
 
         except (EOFError, KeyboardInterrupt):
             print("\nGoodbye!")
@@ -149,7 +197,7 @@ def execute_code_string(code_string, save_ast_path=None, verbose=False):
         lexer = Lexer(code_string)
         tokens = lexer.tokenize()
         executor = Executor(verbose=verbose)
-        parser = Parser(executor.global_scope, executor.functions)
+        parser = Parser()
         ast = parser.parse(tokens)
 
         if save_ast_path:
