@@ -51,6 +51,7 @@ private:
     // ── Automation commands (Phase 2) ──────────────────────────────────────
     NodePtr parseMouseCommand();
     NodePtr parseKeyCommand();
+    NodePtr parseAppCommand();
 
     // ── Expressions (operator precedence climbing) ─────────────────────────
     NodePtr parseExpression();
@@ -69,6 +70,8 @@ private:
     NodePtr parseUnary();
     NodePtr parsePostfix();
     NodePtr parsePrimary();
+    NodePtr parseListLiteral();
+    NodePtr parseMapLiteral();
 
     // ── Helpers ───────────────────────────────────────────────────────────
     NodePtr parseTimeLiteral(const Token& tok);

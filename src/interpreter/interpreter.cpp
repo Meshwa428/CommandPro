@@ -22,9 +22,32 @@ std::string valueToString(const SynapseValue& v) {
         if constexpr (std::is_same_v<T, std::string>)  return a;
         if constexpr (std::is_same_v<T, bool>)         return a ? "true" : "false";
         if constexpr (std::is_same_v<T, SynapseTime>)  return std::to_string(a.ms) + "ms";
-        if constexpr (std::is_same_v<T, SynapsePoint>)
-            return "(" + std::to_string(a.x) + ", " + std::to_string(a.y) + ")";
         if constexpr (std::is_same_v<T, SynapseNull>)  return "null";
+        if constexpr (std::is_same_v<T, std::shared_ptr<SynapseTuple>>) {
+            std::string res = "(";
+            for (size_t i = 0; i < a->size(); ++i) {
+                res += valueToString(a->at(i));
+                if (i < a->size() - 1) res += ", ";
+            }
+            return res + ")";
+        }
+        if constexpr (std::is_same_v<T, std::shared_ptr<SynapseList>>) {
+            std::string res = "[";
+            for (size_t i = 0; i < a->elements.size(); ++i) {
+                res += valueToString(a->elements[i]);
+                if (i < a->elements.size() - 1) res += ", ";
+            }
+            return res + "]";
+        }
+        if constexpr (std::is_same_v<T, std::shared_ptr<SynapseMap>>) {
+            std::string res = "{";
+            size_t count = 0;
+            for (auto const& [key, val] : a->items) {
+                res += "\"" + key + "\": " + valueToString(val);
+                if (++count < a->items.size()) res += ", ";
+            }
+            return res + "}";
+        }
         return "?";
     }, v);
 }
@@ -136,10 +159,12 @@ void Interpreter::visit(TimeLiteralNode& n) {
     lastValue = SynapseTime{n.toMs()};
 }
 
-void Interpreter::visit(PointLiteralNode& n) {
-    double x = valueToDouble(eval(*n.x));
-    double y = valueToDouble(eval(*n.y));
-    lastValue = SynapsePoint{x, y};
+void Interpreter::visit(TupleLiteralNode& n) {
+    std::vector<SynapseValue> elems;
+    elems.reserve(n.elements.size());
+    for (auto& expr : n.elements)
+        elems.push_back(eval(*expr));
+    lastValue = std::make_shared<SynapseTuple>(std::move(elems));
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -402,17 +427,37 @@ void Interpreter::visit(TryCatchNode& n) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+//  Coordinate extraction helper
+//  Accepts any 2-element Tuple or List; extracts (x, y) as ints.
+// ──────────────────────────────────────────────────────────────────────────
+std::pair<int, int> extractCoord(const SynapseValue& v, int line, int col) {
+    auto extract2 = [&](auto getSize, auto getAt) -> std::pair<int, int> {
+        if (getSize() < 2)
+            throw RuntimeError("Coordinate requires at least 2 elements", line, col);
+        int x = static_cast<int>(valueToDouble(getAt(0)));
+        int y = static_cast<int>(valueToDouble(getAt(1)));
+        return {x, y};
+    };
+
+    if (std::holds_alternative<std::shared_ptr<SynapseTuple>>(v)) {
+        auto& t = std::get<std::shared_ptr<SynapseTuple>>(v);
+        return extract2([&]{ return t->size(); }, [&](size_t i) -> const SynapseValue& { return t->at(i); });
+    }
+    if (std::holds_alternative<std::shared_ptr<SynapseList>>(v)) {
+        auto& l = std::get<std::shared_ptr<SynapseList>>(v);
+        return extract2([&]{ return l->elements.size(); }, [&](size_t i) -> const SynapseValue& { return l->elements[i]; });
+    }
+    throw RuntimeError("MOUSE command requires a 2-element Tuple (x, y) or List [x, y]", line, col);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 //  Phase 2: Mouse & Keyboard Automation
 // ──────────────────────────────────────────────────────────────────────────
 void Interpreter::visit(MouseMoveNode& n) {
     if (!platform)
         throw RuntimeError("No platform available for MOUSE MOVE", n.line, n.column);
     SynapseValue v = eval(*n.pointExpr);
-    if (!std::holds_alternative<SynapsePoint>(v))
-        throw RuntimeError("MOUSE MOVE requires a point (x, y)", n.line, n.column);
-    auto& pt = std::get<SynapsePoint>(v);
-    int tx = static_cast<int>(pt.x);
-    int ty = static_cast<int>(pt.y);
+    auto [tx, ty] = extractCoord(v, n.line, n.column);
     platform->mouseMove(tx, ty);
     waitForMouse(tx, ty);
 }
@@ -422,11 +467,7 @@ void Interpreter::visit(MouseClickNode& n) {
         throw RuntimeError("No platform available for MOUSE CLICK", n.line, n.column);
     if (n.pointExpr) {
         SynapseValue v = eval(*n.pointExpr);
-        if (!std::holds_alternative<SynapsePoint>(v))
-            throw RuntimeError("MOUSE CLICK AT requires a point (x, y)", n.line, n.column);
-        auto& pt = std::get<SynapsePoint>(v);
-        int tx = static_cast<int>(pt.x);
-        int ty = static_cast<int>(pt.y);
+        auto [tx, ty] = extractCoord(v, n.line, n.column);
         platform->mouseMove(tx, ty);
         waitForMouse(tx, ty);
     }
@@ -458,12 +499,88 @@ void Interpreter::visit(KeyTypeNode& n) {
     platform->keyType(valueToString(v));
 }
 
+void Interpreter::visit(ListLiteralNode& n) {
+    auto list = std::make_shared<SynapseList>();
+    for (auto& expr : n.elements) {
+        list->elements.push_back(eval(*expr));
+    }
+    lastValue = list;
+}
+
+void Interpreter::visit(MapLiteralNode& n) {
+    auto map = std::make_shared<SynapseMap>();
+    for (auto& [keyExpr, valExpr] : n.items) {
+        std::string key = valueToString(eval(*keyExpr));
+        map->items[key] = eval(*valExpr);
+    }
+    lastValue = map;
+}
+
+void Interpreter::visit(IndexAccessNode& n) {
+    SynapseValue obj = eval(*n.object);
+    SynapseValue idx = eval(*n.index);
+
+    if (std::holds_alternative<std::shared_ptr<SynapseTuple>>(obj)) {
+        auto t = std::get<std::shared_ptr<SynapseTuple>>(obj);
+        long long i = valueToInt(idx);
+        if (i < 0 || i >= static_cast<long long>(t->size()))
+            throw RuntimeError("Tuple index out of range", n.line, n.column);
+        lastValue = t->at(static_cast<size_t>(i));
+    } else if (std::holds_alternative<std::shared_ptr<SynapseList>>(obj)) {
+        auto list = std::get<std::shared_ptr<SynapseList>>(obj);
+        long long i = valueToInt(idx);
+        if (i < 0 || i >= static_cast<long long>(list->elements.size()))
+            throw RuntimeError("List index out of range", n.line, n.column);
+        lastValue = list->elements[i];
+    } else if (std::holds_alternative<std::shared_ptr<SynapseMap>>(obj)) {
+        auto map = std::get<std::shared_ptr<SynapseMap>>(obj);
+        std::string key = valueToString(idx);
+        if (map->items.find(key) == map->items.end())
+            throw RuntimeError("Map key not found: " + key, n.line, n.column);
+        lastValue = map->items[key];
+    } else if (std::holds_alternative<std::string>(obj)) {
+        std::string str = std::get<std::string>(obj);
+        long long i = valueToInt(idx);
+        if (i < 0 || i >= static_cast<long long>(str.size()))
+            throw RuntimeError("String index out of range", n.line, n.column);
+        lastValue = std::string(1, str[i]);
+    } else {
+        throw RuntimeError("Indexing not supported for this type", n.line, n.column);
+    }
+}
+
+void Interpreter::visit(AppOpenNode& n) {
+    if (!platform)
+        throw RuntimeError("No platform available for APP OPEN", n.line, n.column);
+    SynapseValue name = eval(*n.nameExpr);
+    platform->openApp(valueToString(name));
+}
+
+void Interpreter::visit(AppListNode& n) {
+    if (!platform)
+        throw RuntimeError("No platform available for APP LIST", n.line, n.column);
+    
+    auto list = std::make_shared<SynapseList>();
+    auto apps = platform->getAvailableApps();
+    for (const auto& app : apps) {
+        list->elements.push_back(app);
+    }
+    lastValue = list;
+}
+
 void Interpreter::registerBuiltins() {
     // get_mouse_pos() -> POINT
     builtins["get_mouse_pos"] = [this](const std::vector<SynapseValue>& args) -> SynapseValue {
-        if (!platform) return SynapsePoint{0, 0};
+        if (!platform) {
+            std::vector<SynapseValue> zero = {0LL, 0LL};
+            return std::make_shared<SynapseTuple>(std::move(zero));
+        }
         auto p = platform->getMousePosition();
-        return SynapsePoint{static_cast<double>(p.x), static_cast<double>(p.y)};
+        std::vector<SynapseValue> elems = {
+            static_cast<long long>(p.x),
+            static_cast<long long>(p.y)
+        };
+        return std::make_shared<SynapseTuple>(std::move(elems));
     };
 
     // assert(condition, message)
@@ -475,6 +592,35 @@ void Interpreter::registerBuiltins() {
             throw RuntimeError(msg);
         }
         return SynapseNull{};
+    };
+
+    // size(tuple_or_list_or_map_or_str)
+    builtins["size"] = [](const std::vector<SynapseValue>& args) -> SynapseValue {
+        if (args.empty()) return 0LL;
+        const SynapseValue& v = args[0];
+        if (std::holds_alternative<std::shared_ptr<SynapseTuple>>(v))
+            return static_cast<long long>(std::get<std::shared_ptr<SynapseTuple>>(v)->size());
+        if (std::holds_alternative<std::shared_ptr<SynapseList>>(v))
+            return static_cast<long long>(std::get<std::shared_ptr<SynapseList>>(v)->elements.size());
+        if (std::holds_alternative<std::shared_ptr<SynapseMap>>(v))
+            return static_cast<long long>(std::get<std::shared_ptr<SynapseMap>>(v)->items.size());
+        if (std::holds_alternative<std::string>(v))
+            return static_cast<long long>(std::get<std::string>(v).size());
+        return 0LL;
+    };
+
+    // keys(map) -> LIST of strings
+    builtins["keys"] = [](const std::vector<SynapseValue>& args) -> SynapseValue {
+        if (args.empty()) return std::make_shared<SynapseList>();
+        const SynapseValue& v = args[0];
+        auto res = std::make_shared<SynapseList>();
+        if (std::holds_alternative<std::shared_ptr<SynapseMap>>(v)) {
+            auto m = std::get<std::shared_ptr<SynapseMap>>(v);
+            for (auto const& [key, val] : m->items) {
+                res->elements.push_back(key);
+            }
+        }
+        return res;
     };
 }
 

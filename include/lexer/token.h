@@ -49,6 +49,7 @@ enum class TokenType {
     CAPTURE,
     FOCUS,
     OPEN,
+    LIST,
     CLOSE,
     MINIMIZE,
     MAXIMIZE,
@@ -124,6 +125,8 @@ enum class TokenType {
     RPAREN,          // )
     LBRACE,          // {
     RBRACE,          // }
+    LBRACKET,        // [
+    RBRACKET,        // ]
     SEMICOLON,       // ;
     COMMA,           // ,
     COLON,           // :

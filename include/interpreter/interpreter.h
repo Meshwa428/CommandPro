@@ -10,13 +10,7 @@
 
 namespace Synapse {
 
-// ── Runtime value type ─────────────────────────────────────────────────────
-struct SynapsePoint {
-    double x, y;
-    bool operator==(const SynapsePoint& o) const { return x == o.x && y == o.y; }
-    bool operator!=(const SynapsePoint& o) const { return !(*this == o); }
-};
-
+// ── Primitive helpers (no SynapseValue dependency) ────────────────────────
 struct SynapseTime {
     long long ms = 0;
     bool operator==(const SynapseTime& o) const { return ms == o.ms; }
@@ -28,21 +22,66 @@ struct SynapseNull {
     bool operator!=(const SynapseNull&) const { return false; }
 };
 
+// Forward-declare all recursive collection types before SynapseValue
+struct SynapseList;
+struct SynapseMap;
+class  SynapseTuple;  // fully defined below
+
+// ── Core runtime value variant ─────────────────────────────────────────────
 using SynapseValue = std::variant<
-    long long,      // INT
-    double,         // FLOAT
-    std::string,    // STR
-    bool,           // BOOL
-    SynapseTime,    // TIME
-    SynapsePoint,   // POINT
-    SynapseNull     // NULL
+    long long,                      // INT
+    double,                         // FLOAT
+    std::string,                    // STR
+    bool,                           // BOOL
+    SynapseTime,                    // TIME
+    SynapseNull,                    // NULL
+    std::shared_ptr<SynapseTuple>,  // TUPLE (immutable)
+    std::shared_ptr<SynapseList>,
+    std::shared_ptr<SynapseMap>
 >;
+
+// ── SynapseTuple — Python-style immutable sequence ─────────────────────────
+// Defined after SynapseValue to avoid circular dependency.
+// Future: add Small Object Optimization (inline buffer for size≤2) once the
+// recursive variant stabilises.
+class SynapseTuple {
+public:
+    explicit SynapseTuple(std::vector<SynapseValue> elems)
+        : _data(std::move(elems)) {}
+
+    size_t size() const { return _data.size(); }
+
+    const SynapseValue& at(size_t i) const {
+        if (i >= _data.size()) throw std::out_of_range("Tuple index out of range");
+        return _data[i];
+    }
+
+    bool operator==(const SynapseTuple& o) const { return _data == o._data; }
+    bool operator!=(const SynapseTuple& o) const { return !(*this == o); }
+
+private:
+    std::vector<SynapseValue> _data;
+};
+
+struct SynapseList {
+    std::vector<SynapseValue> elements;
+    bool operator==(const SynapseList& o) const { return elements == o.elements; }
+};
+
+struct SynapseMap {
+    std::unordered_map<std::string, SynapseValue> items;
+    bool operator==(const SynapseMap& o) const { return items == o.items; }
+};
 
 // ── Helper converters ──────────────────────────────────────────────────────
 std::string valueToString(const SynapseValue& v);
 bool        valueToBool(const SynapseValue& v);
 double      valueToDouble(const SynapseValue& v);
 long long   valueToInt(const SynapseValue& v);
+
+// Extracts (x, y) as integers from any 2-element collection (Tuple or List).
+// Throws RuntimeError if the value is not a compatible collection.
+std::pair<int, int> extractCoord(const SynapseValue& v, int line = 0, int col = 0);
 
 // ── Exception for early returns ────────────────────────────────────────────
 struct ReturnSignal {
@@ -98,7 +137,7 @@ public:
     void visit(BoolLiteralNode&)     override;
     void visit(NullLiteralNode&)     override;
     void visit(TimeLiteralNode&)     override;
-    void visit(PointLiteralNode&)    override;
+    void visit(TupleLiteralNode&)    override;
     void visit(IdentifierNode&)      override;
     void visit(BinaryExprNode&)      override;
     void visit(UnaryExprNode&)       override;
@@ -123,6 +162,11 @@ public:
     void visit(MouseClickNode&)      override;
     void visit(KeyPressNode&)        override;
     void visit(KeyTypeNode&)         override;
+    void visit(AppOpenNode&)         override;
+    void visit(AppListNode&)         override;
+    void visit(ListLiteralNode&)     override;
+    void visit(MapLiteralNode&)      override;
+    void visit(IndexAccessNode&)     override;
 
 private:
     SynapseValue eval(ASTNode& node);

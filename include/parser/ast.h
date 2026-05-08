@@ -63,10 +63,32 @@ public:
     void accept(ASTVisitor& v) override;
 };
 
-class PointLiteralNode : public ASTNode {
+class TupleLiteralNode : public ASTNode {
 public:
-    NodePtr x, y;
-    PointLiteralNode(NodePtr x, NodePtr y) : x(std::move(x)), y(std::move(y)) {}
+    NodeList elements;
+    explicit TupleLiteralNode(NodeList e) : elements(std::move(e)) {}
+    void accept(ASTVisitor& v) override;
+};
+
+class ListLiteralNode : public ASTNode {
+public:
+    NodeList elements;
+    explicit ListLiteralNode(NodeList e) : elements(std::move(e)) {}
+    void accept(ASTVisitor& v) override;
+};
+
+class MapLiteralNode : public ASTNode {
+public:
+    std::vector<std::pair<NodePtr, NodePtr>> items;
+    explicit MapLiteralNode(std::vector<std::pair<NodePtr, NodePtr>> i) : items(std::move(i)) {}
+    void accept(ASTVisitor& v) override;
+};
+
+class IndexAccessNode : public ASTNode {
+public:
+    NodePtr object;
+    NodePtr index;
+    IndexAccessNode(NodePtr obj, NodePtr idx) : object(std::move(obj)), index(std::move(idx)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -239,7 +261,7 @@ public:
     virtual void visit(BoolLiteralNode&)     = 0;
     virtual void visit(NullLiteralNode&)     = 0;
     virtual void visit(TimeLiteralNode&)     = 0;
-    virtual void visit(PointLiteralNode&)    = 0;
+    virtual void visit(TupleLiteralNode&)    = 0;
     virtual void visit(IdentifierNode&)      = 0;
     virtual void visit(BinaryExprNode&)      = 0;
     virtual void visit(UnaryExprNode&)       = 0;
@@ -264,13 +286,18 @@ public:
     virtual void visit(class MouseClickNode&) = 0;
     virtual void visit(class KeyPressNode&) = 0;
     virtual void visit(class KeyTypeNode&) = 0;
+    virtual void visit(class AppOpenNode&) = 0;
+    virtual void visit(class AppListNode&) = 0;
+    virtual void visit(ListLiteralNode&)   = 0;
+    virtual void visit(MapLiteralNode&)    = 0;
+    virtual void visit(IndexAccessNode&)   = 0;
 };
 
 // ── Automation Nodes (Phase 2) ─────────────────────────────────────────────
 
 class MouseMoveNode : public ASTNode {
 public:
-    NodePtr pointExpr; // Evaluates to SynapsePoint
+    NodePtr pointExpr; // Evaluates to any 2-element iterable (Tuple or List)
 
     explicit MouseMoveNode(NodePtr pt) : pointExpr(std::move(pt)) {}
     void accept(ASTVisitor& v) override;
@@ -297,6 +324,18 @@ class KeyTypeNode : public ASTNode {
 public:
     NodePtr textExpr; // Evaluates to string
     explicit KeyTypeNode(NodePtr t) : textExpr(std::move(t)) {}
+    void accept(ASTVisitor& v) override;
+};
+
+class AppOpenNode : public ASTNode {
+public:
+    NodePtr nameExpr;
+    explicit AppOpenNode(NodePtr n) : nameExpr(std::move(n)) {}
+    void accept(ASTVisitor& v) override;
+};
+
+class AppListNode : public ASTNode {
+public:
     void accept(ASTVisitor& v) override;
 };
 

@@ -9,6 +9,10 @@
 #include <X11/extensions/XTest.h>
 #include <unistd.h>
 #include <iostream>
+#include <vector>
+#include <filesystem>
+#include <fstream>
+#include <algorithm>
 
 namespace Synapse {
 
@@ -91,6 +95,46 @@ public:
             }
             usleep(20000); // small delay between keystrokes
         }
+    }
+
+    std::vector<std::string> getAvailableApps() override {
+        std::vector<std::string> apps;
+        std::vector<std::string> paths = {
+            "/usr/share/applications",
+            "/usr/local/share/applications"
+        };
+        const char* home = std::getenv("HOME");
+        if (home) {
+            apps.push_back(std::string(home) + "/.local/share/applications");
+        }
+
+        for (const auto& p : paths) {
+            if (!std::filesystem::exists(p)) continue;
+            for (const auto& entry : std::filesystem::directory_iterator(p)) {
+                if (entry.path().extension() == ".desktop") {
+                    // Simple parse: look for Name=...
+                    std::ifstream f(entry.path());
+                    std::string line;
+                    while (std::getline(f, line)) {
+                        if (line.substr(0, 5) == "Name=") {
+                            apps.push_back(line.substr(5));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        std::sort(apps.begin(), apps.end());
+        apps.erase(std::unique(apps.begin(), apps.end()), apps.end());
+        return apps;
+    }
+
+    void openApp(const std::string& nameOrPath) override {
+        // Try to find if it's a desktop file name
+        std::string cmd = nameOrPath;
+        // Basic sanitization: don't allow ; or & in name for security if we use system()
+        // But users might want them. For MVP we trust the script.
+        system((cmd + " &").c_str());
     }
 };
 

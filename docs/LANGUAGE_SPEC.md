@@ -85,26 +85,48 @@ true
 false
 ```
 
-#### Point Literal
-Coordinates are expressed as a point pair:
+#### Tuple Literal
+Tuples are immutable, ordered sequences (Python-style semantics):
 ```
-(x, y)
+()             # empty tuple
+(42,)          # single-element tuple (trailing comma required)
+(300, 400)     # 2-element tuple — valid as a mouse coordinate
+(255, 128, 0)  # 3-element tuple
 ```
-**Example:** `(300, 400)`
+
+> **Note:** A single expression in parentheses with **no comma** is simple grouping, not a tuple:
+> `(1 + 2)` → evaluates to `3` (INT), not a tuple.
+
+Tuples can also be nested:
+```
+((1, 2), (3, 4))   # tuple of tuples
+```
 
 ---
 
 ## 3. Data Types
 
-| Type      | Keyword  | Example Value     |
-|-----------|----------|-------------------|
-| Integer   | `INT`    | `42`              |
-| Float     | `FLOAT`  | `3.14`            |
-| String    | `STR`    | `"Hello"`         |
-| Boolean   | `BOOL`   | `true` / `false`  |
-| Time      | `TIME`   | `500ms`, `2s`     |
-| Point     | `POINT`  | `(100, 300)`      |
-| Null      | `NULL`   | `null`            |
+| Type      | Keyword  | Example Value            | Notes                          |
+|-----------|----------|--------------------------|--------------------------------|
+| Integer   | `INT`    | `42`                     |                                |
+| Float     | `FLOAT`  | `3.14`                   |                                |
+| String    | `STR`    | `"Hello"`                |                                |
+| Boolean   | `BOOL`   | `true` / `false`         |                                |
+| Time      | `TIME`   | `500ms`, `2s`            | First-class duration           |
+| Tuple     | `TUPLE`  | `(300, 400)`             | Immutable, use as coordinates  |
+| List      | `LIST`   | `[1, 2, 3]`              | Mutable, dynamic array         |
+| Map       | `MAP`    | `{"key": "val"}`         | String-keyed dictionary        |
+| Null      | `NULL`   | `null`                   |                                |
+
+### 3.1 Coordinates
+Any **2-element Tuple or List** can be used as a coordinate in automation commands:
+```
+MOUSE MOVE TO (300, 400);   # tuple coordinate
+MOUSE MOVE TO [100, 200];   # list coordinate
+
+let pos = (500, 300);
+MOUSE MOVE TO pos;           # variable holding a tuple
+```
 
 ### 3.1 Type Inference
 Types are inferred at assignment. Explicit casting is supported:

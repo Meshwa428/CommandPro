@@ -83,6 +83,7 @@ NodePtr Parser::parseStatement() {
         case TokenType::RETURN:  return parseReturn();
         case TokenType::MOUSE:   return parseMouseCommand();
         case TokenType::KEY:     return parseKeyCommand();
+        case TokenType::APP:     return parseAppCommand();
         default:
             // Standalone function call: name(args);
             if (check(TokenType::IDENTIFIER) &&
@@ -429,48 +430,82 @@ NodePtr Parser::parsePower() {
 }
 
 NodePtr Parser::parseUnary() {
-    if (check(TokenType::MINUS)) {
-        int ln = cur().line, col = cur().column;
-        ++idx;
-        auto node = std::make_unique<UnaryExprNode>("-", parseUnary());
-        node->line = ln; node->column = col;
-        return node;
-    }
-    if (check(TokenType::TILDE)) {
-        int ln = cur().line, col = cur().column;
-        ++idx;
-        auto node = std::make_unique<UnaryExprNode>("~", parseUnary());
-        node->line = ln; node->column = col;
-        return node;
+    if (match(TokenType::NOT) || match(TokenType::MINUS) || match(TokenType::TILDE)) {
+        std::string op = tokens[idx-1].value;
+        return std::make_unique<UnaryExprNode>(op, parseUnary());
     }
     return parsePostfix();
 }
 
 NodePtr Parser::parsePostfix() {
     NodePtr node = parsePrimary();
-    // future: member access, index etc.
+    while (true) {
+        if (check(TokenType::LBRACKET)) {
+            int ln = cur().line, col = cur().column;
+            eat(TokenType::LBRACKET);
+            NodePtr index = parseExpression();
+            eat(TokenType::RBRACKET);
+            auto next = std::make_unique<IndexAccessNode>(std::move(node), std::move(index));
+            next->line = ln; next->column = col;
+            node = std::move(next);
+        } else {
+            break;
+        }
+    }
     return node;
 }
 
 NodePtr Parser::parsePrimary() {
     const Token& tok = cur();
 
-    // Grouped expression
+    // Grouped expression OR Tuple literal
+    // Disambiguation rules (matching Python semantics):
+    //   ()          → empty Tuple
+    //   (expr,)     → single-element Tuple
+    //   (a, b, ...) → multi-element Tuple
+    //   (expr)      → grouping (returns expr, not a Tuple)
     if (tok.type == TokenType::LPAREN) {
-        // Could be (x, y) point or (expr)
-        // Look ahead: if after LPAREN there's expr COMMA we treat as point
-        size_t saved = idx;
+        int ln = tok.line, col = tok.column;
         ++idx; // eat (
+
+        // Empty tuple: ()
+        if (check(TokenType::RPAREN)) {
+            ++idx; // eat )
+            auto node = std::make_unique<TupleLiteralNode>(NodeList{});
+            node->line = ln; node->column = col;
+            return node;
+        }
+
         NodePtr first = parseExpression();
-        if (check(TokenType::COMMA)) {
-            // It's a point literal
-            ++idx; // eat ,
-            NodePtr second = parseExpression();
-            eat(TokenType::RPAREN);
-            return std::make_unique<PointLiteralNode>(std::move(first), std::move(second));
+
+        if (check(TokenType::RPAREN)) {
+            // Plain grouping: (expr)
+            ++idx; // eat )
+            return first;
+        }
+
+        // Has a comma — it's a Tuple
+        eat(TokenType::COMMA);
+        NodeList elements;
+        elements.push_back(std::move(first));
+
+        // Trailing comma after first element: (val,) → single-element tuple
+        if (check(TokenType::RPAREN)) {
+            ++idx; // eat )
+            auto node = std::make_unique<TupleLiteralNode>(std::move(elements));
+            node->line = ln; node->column = col;
+            return node;
+        }
+
+        // Remaining elements
+        while (!check(TokenType::RPAREN) && !check(TokenType::END_OF_FILE)) {
+            elements.push_back(parseExpression());
+            if (!check(TokenType::RPAREN)) eat(TokenType::COMMA);
         }
         eat(TokenType::RPAREN);
-        return first;
+        auto node = std::make_unique<TupleLiteralNode>(std::move(elements));
+        node->line = ln; node->column = col;
+        return node;
     }
 
     // Literals
@@ -493,6 +528,20 @@ NodePtr Parser::parsePrimary() {
     if (tok.type == TokenType::FALSE_LIT) { ++idx; return std::make_unique<BoolLiteralNode>(false); }
     if (tok.type == TokenType::NULL_LIT)  { ++idx; return std::make_unique<NullLiteralNode>(); }
 
+    if (tok.type == TokenType::LBRACKET) return parseListLiteral();
+    if (tok.type == TokenType::LBRACE)   return parseMapLiteral();
+
+    if (tok.type == TokenType::APP) {
+        size_t saved = idx;
+        eat(TokenType::APP);
+        if (match(TokenType::LIST)) {
+            auto node = std::make_unique<AppListNode>();
+            node->line = tok.line; node->column = tok.column;
+            return node;
+        }
+        idx = saved; // Rollback if not APP LIST, let parseStatement handle it
+    }
+
     // Identifier or function call — only parses value, never eats trailing ;
     if (tok.type == TokenType::IDENTIFIER) {
         ++idx;
@@ -513,6 +562,40 @@ NodePtr Parser::parsePrimary() {
         std::string("Unexpected token '") + tok.value + "' in expression",
         tok.line, tok.column
     );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+//  Collections
+// ──────────────────────────────────────────────────────────────────────────
+NodePtr Parser::parseListLiteral() {
+    int ln = cur().line, col = cur().column;
+    eat(TokenType::LBRACKET);
+    NodeList elements;
+    while (!check(TokenType::RBRACKET) && !check(TokenType::END_OF_FILE)) {
+        elements.push_back(parseExpression());
+        if (!check(TokenType::RBRACKET)) eat(TokenType::COMMA);
+    }
+    eat(TokenType::RBRACKET);
+    auto node = std::make_unique<ListLiteralNode>(std::move(elements));
+    node->line = ln; node->column = col;
+    return node;
+}
+
+NodePtr Parser::parseMapLiteral() {
+    int ln = cur().line, col = cur().column;
+    eat(TokenType::LBRACE);
+    std::vector<std::pair<NodePtr, NodePtr>> items;
+    while (!check(TokenType::RBRACE) && !check(TokenType::END_OF_FILE)) {
+        NodePtr key = parseExpression();
+        eat(TokenType::COLON);
+        NodePtr val = parseExpression();
+        items.push_back({std::move(key), std::move(val)});
+        if (!check(TokenType::RBRACE)) eat(TokenType::COMMA);
+    }
+    eat(TokenType::RBRACE);
+    auto node = std::make_unique<MapLiteralNode>(std::move(items));
+    node->line = ln; node->column = col;
+    return node;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -622,6 +705,35 @@ NodePtr Parser::parseKeyCommand() {
     }
 
     throw ParseError("Expected PRESS or TYPE after KEY", ln, col);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+//  Automation: APP commands
+//  APP OPEN "name";
+//  APP LIST; (as statement or expression)
+// ──────────────────────────────────────────────────────────────────────────
+NodePtr Parser::parseAppCommand() {
+    int ln = cur().line, col = cur().column;
+    eat(TokenType::APP);
+
+    if (match(TokenType::OPEN)) {
+        NodePtr name = parseExpression();
+        eat(TokenType::SEMICOLON);
+        auto node = std::make_unique<AppOpenNode>(std::move(name));
+        node->line = ln; node->column = col;
+        return node;
+    }
+
+    if (match(TokenType::LIST)) {
+        // If followed by ;, it's a statement. Otherwise it was handled by parsePrimary as expr.
+        // But here we are in parseStatement context if called from there.
+        auto node = std::make_unique<AppListNode>();
+        node->line = ln; node->column = col;
+        if (check(TokenType::SEMICOLON)) eat(TokenType::SEMICOLON);
+        return node;
+    }
+
+    throw ParseError("Expected OPEN or LIST after APP", ln, col);
 }
 
 } // namespace Synapse

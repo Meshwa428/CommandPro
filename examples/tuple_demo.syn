@@ -1,0 +1,43 @@
+# ── Tuple Demo ────────────────────────────────────────────────────────────
+# Demonstrates Python-style tuples in Synapse
+
+# Empty tuple
+let empty = ();
+println "Empty tuple: " + empty;
+println "Size: " + size(empty);
+
+# Single-element tuple (trailing comma required)
+let single = (42,);
+println "Single-element tuple: " + single;
+println "First element: " + single[0];
+
+# 2-element tuple — also valid as a coordinate
+let coord = (300, 400);
+println "Coordinate tuple: " + coord;
+println "X = " + coord[0] + ", Y = " + coord[1];
+
+# Multi-element tuple
+let rgb = (255, 128, 0);
+println "Color tuple: " + rgb;
+println "Red: " + rgb[0] + ", Green: " + rgb[1] + ", Blue: " + rgb[2];
+println "Size of rgb: " + size(rgb);
+
+# Nested tuples
+let matrix_row = ((1, 2), (3, 4));
+println "Nested: " + matrix_row;
+println "matrix_row[0] = " + matrix_row[0];
+println "matrix_row[1][0] = " + matrix_row[1][0];
+
+# Mixed types in tuple
+let mixed = ("hello", 99, true, null);
+println "Mixed tuple: " + mixed;
+println "Type-agnostic element: " + mixed[0];
+
+# LIST also works as a coordinate
+let list_coord = [500, 200];
+println "List as coord: " + list_coord;
+
+# Use a tuple directly as a MOUSE coordinate
+println "Mouse commands will accept tuples or lists as coordinates:";
+println "  MOUSE MOVE TO (300, 400);  # tuple";
+println "  MOUSE MOVE TO [100, 200];  # list";

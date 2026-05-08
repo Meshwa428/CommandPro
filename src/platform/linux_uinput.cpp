@@ -8,6 +8,9 @@
 #include <linux/uinput.h>
 #include <cstring>
 #include <stdexcept>
+#include <filesystem>
+#include <fstream>
+#include <algorithm>
 
 namespace Synapse {
 
@@ -143,6 +146,41 @@ public:
             keyPress(key);
             usleep(10000);
         }
+    }
+
+    std::vector<std::string> getAvailableApps() override {
+        std::vector<std::string> apps;
+        std::vector<std::string> paths = {
+            "/usr/share/applications",
+            "/usr/local/share/applications"
+        };
+        const char* home = std::getenv("HOME");
+        if (home) {
+            paths.push_back(std::string(home) + "/.local/share/applications");
+        }
+
+        for (const auto& p : paths) {
+            if (!std::filesystem::exists(p)) continue;
+            for (const auto& entry : std::filesystem::directory_iterator(p)) {
+                if (entry.path().extension() == ".desktop") {
+                    std::ifstream f(entry.path());
+                    std::string line;
+                    while (std::getline(f, line)) {
+                        if (line.substr(0, 5) == "Name=") {
+                            apps.push_back(line.substr(5));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        std::sort(apps.begin(), apps.end());
+        apps.erase(std::unique(apps.begin(), apps.end()), apps.end());
+        return apps;
+    }
+
+    void openApp(const std::string& nameOrPath) override {
+        system((nameOrPath + " &").c_str());
     }
 };
 

@@ -36,6 +36,15 @@ public:
     void keyType(const std::string& text) override {
         std::cout << "[MOCK] KEY_TYPE " << text << std::endl;
     }
+
+    std::vector<std::string> getAvailableApps() override {
+        std::cout << "[MOCK] GET_AVAILABLE_APPS" << std::endl;
+        return {"MockBrowser", "MockTerm", "MockEditor"};
+    }
+
+    void openApp(const std::string& nameOrPath) override {
+        std::cout << "[MOCK] OPEN_APP " << nameOrPath << std::endl;
+    }
 };
 
 // We will modify IPlatform::create() or add a new way to get the mock in main.cpp

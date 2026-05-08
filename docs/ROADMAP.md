@@ -54,12 +54,12 @@ The initial skeleton of the C++ Lexer, Parser, and Interpreter has been created.
 **Goal:** Allow full control of application windows.
 
 **Planned Features:**
-- [ ] `WINDOW OPEN / CLOSE / FOCUS / MOVE / RESIZE` 
-- [ ] `WINDOW MINIMIZE / MAXIMIZE / RESTORE`
-- [ ] `APP OPEN / CLOSE / LIST`
-- [ ] **Advanced Data Types**:
-  - [ ] `LIST` (Dynamic arrays)
-  - [ ] `MAP` (Key-value dictionaries)
+- [x] `WINDOW OPEN / CLOSE / FOCUS / MOVE / RESIZE` 
+- [x] `WINDOW MINIMIZE / MAXIMIZE / RESTORE`
+- [x] `APP OPEN / CLOSE / LIST`
+- [x] **Advanced Data Types**:
+  - [x] `LIST` (Dynamic arrays)
+  - [x] `MAP` (Key-value dictionaries)
   - [ ] `TUPLE` (Immutable collections - *planned for v0.8.x*)
   - [ ] `SET` (Unique collections - *planned for v0.8.x*)
 - [ ] `WINDOW "<name>" EXISTS` condition

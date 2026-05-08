@@ -9,7 +9,10 @@ void StringLiteralNode ::accept(ASTVisitor& v) { v.visit(*this); }
 void BoolLiteralNode   ::accept(ASTVisitor& v) { v.visit(*this); }
 void NullLiteralNode   ::accept(ASTVisitor& v) { v.visit(*this); }
 void TimeLiteralNode   ::accept(ASTVisitor& v) { v.visit(*this); }
-void PointLiteralNode  ::accept(ASTVisitor& v) { v.visit(*this); }
+void TupleLiteralNode  ::accept(ASTVisitor& v) { v.visit(*this); }
+void ListLiteralNode   ::accept(ASTVisitor& v) { v.visit(*this); }
+void MapLiteralNode    ::accept(ASTVisitor& v) { v.visit(*this); }
+void IndexAccessNode   ::accept(ASTVisitor& v) { v.visit(*this); }
 void IdentifierNode    ::accept(ASTVisitor& v) { v.visit(*this); }
 void BinaryExprNode    ::accept(ASTVisitor& v) { v.visit(*this); }
 void UnaryExprNode     ::accept(ASTVisitor& v) { v.visit(*this); }
@@ -34,6 +37,8 @@ void MouseMoveNode ::accept(ASTVisitor& v) { v.visit(*this); }
 void MouseClickNode::accept(ASTVisitor& v) { v.visit(*this); }
 void KeyPressNode  ::accept(ASTVisitor& v) { v.visit(*this); }
 void KeyTypeNode   ::accept(ASTVisitor& v) { v.visit(*this); }
+void AppOpenNode   ::accept(ASTVisitor& v) { v.visit(*this); }
+void AppListNode   ::accept(ASTVisitor& v) { v.visit(*this); }
 
 // ── TimeLiteralNode::toMs() ───────────────────────────────────────────────
 long long TimeLiteralNode::toMs() const {

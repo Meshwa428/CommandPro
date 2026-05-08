@@ -128,11 +128,30 @@ Existing automation tools have fundamental limitations:
 ### 5.5 OS Abstraction Layer (OAL)
 - Provides a platform-neutral C++ interface for all OS interactions
 - Each capability is behind a common interface with separate platform implementations
-- Platform resolved at **compile-time** via `#ifdef` guards
+- Each capability is behind a common interface with separate platform implementations
+- Platform resolved at **runtime** via factory method (`IPlatform::create()`)
 
 ---
 
-## 6. Design Decisions Log
+## 6. Data Types & Collections
+
+Synapse supports both primitive and recursive collection types:
+
+| Type | Syntax | Description |
+|---|---|---|
+| **INT** | `42` | 64-bit integer |
+| **FLOAT** | `3.14` | Double-precision floating point |
+| **STR** | `"Hello"` | UTF-8 encoded string |
+| **BOOL** | `true` | Boolean flag |
+| **TIME** | `500ms`, `2s` | Native duration type |
+| **POINT** | `(x, y)` | Cartesian coordinate pair |
+| **LIST** | `[1, 2, 3]` | Dynamic, recursive array |
+| **MAP** | `{"key": "val"}` | String-keyed dictionary |
+| **NULL** | `null` | Representing absence of value |
+
+---
+
+## 7. Design Decisions Log
 
 | Decision | Alternatives Considered | Reason Chosen |
 |---|---|---|
@@ -142,6 +161,9 @@ Existing automation tools have fundamental limitations:
 | **Native OS APIs (Win32/X11)** | Qt, SDL, libxdo | Avoids heavy dependencies, keeps binary small, Qt is not designed for controlling third-party apps |
 | **`.syn` file extension** | `.csc`, `.pilot`, `.auto` | Reflects the Synapse brand identity, short and memorable |
 | **CLI-first design** | REPL, GUI, VS Code extension | Fastest path to a usable prototype; CLI-first is also the most scriptable and automatable |
+| **Retired `SynapsePoint` type** | Keep as specialized primitive | Any 2-element Tuple or List can serve as a coordinate; YAGNI avoids a redundant type |
+| **`TUPLE` syntax: `(a, b, ...)`** | `<a, b>`, `@(a, b)`, `point(a, b)` | Python-style parenthesis is most familiar; trailing-comma disambiguates grouping from single-element tuples |
+| **`SynapseTuple` after `SynapseValue`** | Inline buffer (SOO) before variant | C++ forward-declaration allows recursive definition without circular deps; SOO can be added later |
 
 ---
 

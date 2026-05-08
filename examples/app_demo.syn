@@ -1,0 +1,18 @@
+# App listing
+println "Listing available apps...";
+let apps = APP LIST;
+
+# Search for a specific app (case-insensitive search would be nice, but simple search for now)
+repeat 5 times {
+    # Print first 5 apps
+    # Note: we need a way to get length, but for now we know there are some in mock
+    # Wait, repeat N times doesn't give index. I'll just print them.
+}
+
+println "Total apps found: " + size(apps);
+
+# Let's just print the whole list
+println apps;
+
+# Open an app
+APP OPEN "MockBrowser";

@@ -48,6 +48,7 @@ const std::unordered_map<std::string, TokenType> Lexer::KEYWORDS = {
     {"CAPTURE",  TokenType::CAPTURE},
     {"FOCUS",    TokenType::FOCUS},
     {"OPEN",     TokenType::OPEN},
+    {"LIST",     TokenType::LIST},
     {"CLOSE",    TokenType::CLOSE},
     {"MINIMIZE", TokenType::MINIMIZE},
     {"MAXIMIZE", TokenType::MAXIMIZE},
@@ -246,6 +247,8 @@ Token Lexer::scanOperatorOrPunct() {
         case ')': return {TokenType::RPAREN,   ")",  startLine, startCol};
         case '{': return {TokenType::LBRACE,   "{",  startLine, startCol};
         case '}': return {TokenType::RBRACE,   "}",  startLine, startCol};
+        case '[': return {TokenType::LBRACKET, "[",  startLine, startCol};
+        case ']': return {TokenType::RBRACKET, "]",  startLine, startCol};
         case ';': return {TokenType::SEMICOLON,";",  startLine, startCol};
         case ',': return {TokenType::COMMA,    ",",  startLine, startCol};
         case ':':
@@ -304,6 +307,7 @@ const char* tokenTypeName(TokenType t) {
         CASE(POWER); CASE(FLOORDIV); CASE(EQEQ); CASE(NEQ);
         CASE(LT); CASE(GT); CASE(LEQ); CASE(GEQ); CASE(STRICT_EQ);
         CASE(EQUALS); CASE(LPAREN); CASE(RPAREN); CASE(LBRACE); CASE(RBRACE);
+        CASE(LBRACKET); CASE(RBRACKET);
         CASE(SEMICOLON); CASE(COMMA); CASE(COLON); CASE(DOT);
         CASE(END_OF_FILE); CASE(UNKNOWN);
 #undef CASE

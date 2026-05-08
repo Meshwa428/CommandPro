@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <memory>
+#include <vector>
 
 namespace Synapse {
 
@@ -28,6 +29,10 @@ public:
     // Keyboard Automation
     virtual void keyPress(const std::string& key) = 0;
     virtual void keyType(const std::string& text) = 0;
+
+    // App management
+    virtual std::vector<std::string> getAvailableApps() = 0;
+    virtual void openApp(const std::string& nameOrPath) = 0;
 
     // Factory method to get current OS platform
     static std::shared_ptr<IPlatform> create();
