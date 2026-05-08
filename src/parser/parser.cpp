@@ -70,20 +70,29 @@ NodePtr Parser::parseBlock() {
 // ──────────────────────────────────────────────────────────────────────────
 NodePtr Parser::parseStatement() {
     switch (cur().type) {
-        case TokenType::LET:     return parseVarDecl();
-        case TokenType::FN:      return parseFuncDecl();
-        case TokenType::IF:      return parseIf();
-        case TokenType::REPEAT:  return parseRepeat();
-        case TokenType::LOOP:    return parseWhile();
-        case TokenType::TRY:     return parseTryCatch();
-        case TokenType::PRINT:   return parsePrint(false);
-        case TokenType::PRINTLN: return parsePrint(true);
-        case TokenType::ASK:     return parseAsk();
-        case TokenType::WAIT:    return parseWait();
-        case TokenType::RETURN:  return parseReturn();
-        case TokenType::MOUSE:   return parseMouseCommand();
-        case TokenType::KEY:     return parseKeyCommand();
-        case TokenType::APP:     return parseAppCommand();
+        case TokenType::LET:        return parseVarDecl();
+        // Typed declarations: int x = 1; float y = 3.14;
+        case TokenType::INT_TYPE:   return parseTypedVarDecl("int");
+        case TokenType::FLOAT_TYPE: return parseTypedVarDecl("float");
+        case TokenType::STR_TYPE:   return parseTypedVarDecl("str");
+        case TokenType::BOOL_TYPE:  return parseTypedVarDecl("bool");
+        case TokenType::TUPLE_TYPE: return parseTypedVarDecl("tuple");
+        case TokenType::LIST_TYPE:  return parseTypedVarDecl("list");
+        case TokenType::MAP_TYPE:   return parseTypedVarDecl("map");
+        case TokenType::TIME_TYPE:  return parseTypedVarDecl("time");
+        case TokenType::FN:         return parseFuncDecl();
+        case TokenType::IF:         return parseIf();
+        case TokenType::REPEAT:     return parseRepeat();
+        case TokenType::LOOP:       return parseWhile();
+        case TokenType::TRY:        return parseTryCatch();
+        case TokenType::PRINT:      return parsePrint(false);
+        case TokenType::PRINTLN:    return parsePrint(true);
+        case TokenType::ASK:        return parseAsk();
+        case TokenType::WAIT:       return parseWait();
+        case TokenType::RETURN:     return parseReturn();
+        case TokenType::MOUSE:      return parseMouseCommand();
+        case TokenType::KEY:        return parseKeyCommand();
+        case TokenType::APP:        return parseAppCommand();
         default:
             // Standalone function call: name(args);
             if (check(TokenType::IDENTIFIER) &&
@@ -109,6 +118,21 @@ NodePtr Parser::parseVarDecl() {
     NodePtr val = parseExpression();
     eat(TokenType::SEMICOLON);
     auto node = std::make_unique<VarDeclNode>(name, std::move(val));
+    node->line = ln; node->column = col;
+    return node;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+//  Typed Variable declaration:  int name = expr ;
+// ──────────────────────────────────────────────────────────────────────────
+NodePtr Parser::parseTypedVarDecl(const std::string& typeName) {
+    int ln = cur().line, col = cur().column;
+    ++idx; // Eat the type keyword (e.g. INT_TYPE)
+    std::string name = eat(TokenType::IDENTIFIER).value;
+    eat(TokenType::EQUALS);
+    NodePtr val = parseExpression();
+    eat(TokenType::SEMICOLON);
+    auto node = std::make_unique<TypedVarDeclNode>(typeName, name, std::move(val));
     node->line = ln; node->column = col;
     return node;
 }
@@ -534,7 +558,7 @@ NodePtr Parser::parsePrimary() {
     if (tok.type == TokenType::APP) {
         size_t saved = idx;
         eat(TokenType::APP);
-        if (match(TokenType::LIST)) {
+        if (match(TokenType::LIST_TYPE)) {
             auto node = std::make_unique<AppListNode>();
             node->line = tok.line; node->column = tok.column;
             return node;
@@ -724,7 +748,7 @@ NodePtr Parser::parseAppCommand() {
         return node;
     }
 
-    if (match(TokenType::LIST)) {
+    if (match(TokenType::LIST_TYPE)) {
         // If followed by ;, it's a statement. Otherwise it was handled by parsePrimary as expr.
         // But here we are in parseStatement context if called from there.
         auto node = std::make_unique<AppListNode>();

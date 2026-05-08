@@ -140,6 +140,18 @@ public:
     void accept(ASTVisitor& v) override;
 };
 
+// Typed variable declaration: int x = expr; float y = 3.14;
+// The declared type is validated/coerced at runtime.
+class TypedVarDeclNode : public ASTNode {
+public:
+    std::string typeName; // "int", "float", "str", "bool", "tuple", "list", "map", "time"
+    std::string name;
+    NodePtr     value;
+    TypedVarDeclNode(std::string type, std::string n, NodePtr v)
+        : typeName(std::move(type)), name(std::move(n)), value(std::move(v)) {}
+    void accept(ASTVisitor& v) override;
+};
+
 class AssignNode : public ASTNode {
 public:
     std::string name;
@@ -268,6 +280,7 @@ public:
     virtual void visit(BlockNode&)           = 0;
     virtual void visit(ProgramNode&)         = 0;
     virtual void visit(VarDeclNode&)         = 0;
+    virtual void visit(TypedVarDeclNode&)    = 0;
     virtual void visit(AssignNode&)          = 0;
     virtual void visit(CompoundAssignNode&)  = 0;
     virtual void visit(PrintNode&)           = 0;

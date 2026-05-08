@@ -32,6 +32,17 @@ enum class TokenType {
     TRY,
     CATCH,
 
+    // ── Type Declaration Keywords ─────────────────────────────
+    // Used for typed variable declarations: int x = 1;
+    INT_TYPE,    // int
+    FLOAT_TYPE,  // float
+    STR_TYPE,    // str
+    BOOL_TYPE,   // bool
+    TUPLE_TYPE,  // tuple
+    LIST_TYPE,   // list  (distinct from LIST automation keyword)
+    MAP_TYPE,    // map
+    TIME_TYPE,   // time
+
     // ── Automation Keywords ───────────────────────────────────
     MOUSE,
     KEY,
@@ -49,7 +60,6 @@ enum class TokenType {
     CAPTURE,
     FOCUS,
     OPEN,
-    LIST,
     CLOSE,
     MINIMIZE,
     MAXIMIZE,

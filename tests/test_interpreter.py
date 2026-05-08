@@ -22,7 +22,7 @@ def test_vars_literals():
     assert lines[2] == "true"
     assert lines[3] == "test"
     assert lines[4] == "500ms"
-    assert lines[5] == "(10.000000, 20.000000)"
+    assert lines[5] == "(10, 20)"
     assert lines[6] == "null"
     assert lines[7] == "now a string"
 

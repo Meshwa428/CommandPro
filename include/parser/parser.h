@@ -34,6 +34,7 @@ private:
 
     // ── Declarations ──────────────────────────────────────────────────────
     NodePtr parseVarDecl();
+    NodePtr parseTypedVarDecl(const std::string& typeName); // int x = expr;
     NodePtr parseFuncDecl();
 
     // ── Control flow ──────────────────────────────────────────────────────

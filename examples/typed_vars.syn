@@ -1,0 +1,30 @@
+int x = 10;
+println "x is int: " + x;
+
+float y = 3.14;
+println "y is float: " + y;
+
+str name = "Synapse";
+println "name is str: " + name;
+
+bool flag = true;
+println "flag is bool: " + flag;
+
+int z = 10.5;
+println "z coerced from float to int: " + z;
+
+float w = 5;
+println "w coerced from int to float: " + w;
+
+x = 20;
+println "x reassigned: " + x;
+
+try {
+    x = "hello";
+} catch (e) {
+    println "Successfully caught type error!";
+}
+
+let generic = 100;
+generic = "can be anything";
+println "generic var is dynamic: " + generic;

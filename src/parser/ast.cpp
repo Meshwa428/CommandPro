@@ -19,6 +19,7 @@ void UnaryExprNode     ::accept(ASTVisitor& v) { v.visit(*this); }
 void BlockNode         ::accept(ASTVisitor& v) { v.visit(*this); }
 void ProgramNode       ::accept(ASTVisitor& v) { v.visit(*this); }
 void VarDeclNode       ::accept(ASTVisitor& v) { v.visit(*this); }
+void TypedVarDeclNode  ::accept(ASTVisitor& v) { v.visit(*this); }
 void AssignNode        ::accept(ASTVisitor& v) { v.visit(*this); }
 void CompoundAssignNode::accept(ASTVisitor& v) { v.visit(*this); }
 void PrintNode         ::accept(ASTVisitor& v) { v.visit(*this); }

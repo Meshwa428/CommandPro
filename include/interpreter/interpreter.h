@@ -97,12 +97,18 @@ public:
     void set(const std::string& name, SynapseValue val) {
         vars[name] = std::move(val);
     }
+    void setTyped(const std::string& name, SynapseValue val, const std::string& typeName) {
+        vars[name] = std::move(val);
+        types[name] = typeName;
+    }
     void assign(const std::string& name, SynapseValue val);
     SynapseValue get(const std::string& name) const;
     bool         has(const std::string& name) const;
+    std::string  getTypeConstraint(const std::string& name) const;
 
 private:
     std::unordered_map<std::string, SynapseValue> vars;
+    std::unordered_map<std::string, std::string>  types;
     std::shared_ptr<Environment>                  parent;
 };
 
@@ -144,6 +150,7 @@ public:
     void visit(BlockNode&)           override;
     void visit(ProgramNode&)         override;
     void visit(VarDeclNode&)         override;
+    void visit(TypedVarDeclNode&)    override;
     void visit(AssignNode&)          override;
     void visit(CompoundAssignNode&)  override;
     void visit(PrintNode&)           override;

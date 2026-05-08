@@ -90,6 +90,46 @@ long long valueToInt(const SynapseValue& v) {
     }, v);
 }
 
+SynapseValue coerceToType(const std::string& typeName, const SynapseValue& val, int ln, int col) {
+    if (typeName.empty()) return val; // No constraint
+
+    if (typeName == "int") {
+        if (std::holds_alternative<long long>(val)) return val;
+        if (std::holds_alternative<double>(val)) return static_cast<long long>(std::get<double>(val));
+        throw RuntimeError("Type mismatch: Cannot convert to int", ln, col);
+    }
+    if (typeName == "float") {
+        if (std::holds_alternative<double>(val)) return val;
+        if (std::holds_alternative<long long>(val)) return static_cast<double>(std::get<long long>(val));
+        throw RuntimeError("Type mismatch: Cannot convert to float", ln, col);
+    }
+    if (typeName == "str") {
+        if (std::holds_alternative<std::string>(val)) return val;
+        throw RuntimeError("Type mismatch: Expected str", ln, col);
+    }
+    if (typeName == "bool") {
+        if (std::holds_alternative<bool>(val)) return val;
+        throw RuntimeError("Type mismatch: Expected bool", ln, col);
+    }
+    if (typeName == "tuple") {
+        if (std::holds_alternative<std::shared_ptr<SynapseTuple>>(val)) return val;
+        throw RuntimeError("Type mismatch: Expected tuple", ln, col);
+    }
+    if (typeName == "list") {
+        if (std::holds_alternative<std::shared_ptr<SynapseList>>(val)) return val;
+        throw RuntimeError("Type mismatch: Expected list", ln, col);
+    }
+    if (typeName == "map") {
+        if (std::holds_alternative<std::shared_ptr<SynapseMap>>(val)) return val;
+        throw RuntimeError("Type mismatch: Expected map", ln, col);
+    }
+    if (typeName == "time") {
+        if (std::holds_alternative<SynapseTime>(val)) return val;
+        throw RuntimeError("Type mismatch: Expected time", ln, col);
+    }
+    return val;
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 //  Environment
 // ──────────────────────────────────────────────────────────────────────────
@@ -100,9 +140,24 @@ SynapseValue Environment::get(const std::string& name) const {
     throw RuntimeError("Undefined variable: '" + name + "'");
 }
 
+std::string Environment::getTypeConstraint(const std::string& name) const {
+    auto it = types.find(name);
+    if (it != types.end()) return it->second;
+    if (parent) return parent->getTypeConstraint(name);
+    return "";
+}
+
 void Environment::assign(const std::string& name, SynapseValue val) {
     auto it = vars.find(name);
-    if (it != vars.end()) { it->second = std::move(val); return; }
+    if (it != vars.end()) { 
+        // Coerce if there's a constraint (line/col info lost here, will throw generic RuntimeError)
+        auto typeIt = types.find(name);
+        if (typeIt != types.end()) {
+            val = coerceToType(typeIt->second, val, 0, 0);
+        }
+        it->second = std::move(val); 
+        return; 
+    }
     if (parent) { parent->assign(name, std::move(val)); return; }
     throw RuntimeError("Assignment to undeclared variable: '" + name + "'");
 }
@@ -174,6 +229,19 @@ void Interpreter::visit(IdentifierNode& n) {
     lastValue = currentEnv->get(n.name);
 }
 
+static bool isEqual(const SynapseValue& l, const SynapseValue& r) {
+    if (l.index() != r.index()) return false;
+    if (std::holds_alternative<std::shared_ptr<SynapseTuple>>(l)) {
+        auto p1 = std::get<std::shared_ptr<SynapseTuple>>(l);
+        auto p2 = std::get<std::shared_ptr<SynapseTuple>>(r);
+        if (p1 == p2) return true;
+        if (p1 && p2) return *p1 == *p2;
+        return false;
+    }
+    // Future: add List and Map deep equality here
+    return l == r;
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 //  Binary operators
 // ──────────────────────────────────────────────────────────────────────────
@@ -205,9 +273,9 @@ SynapseValue Interpreter::applyBinaryOp(const std::string& op,
     if (op == "**") return SynapseValue(std::pow(valueToDouble(l), valueToDouble(r)));
 
     // Comparison
-    if (op == "==")  return SynapseValue(l == r);
-    if (op == "!=")  return SynapseValue(l != r);
-    if (op == "===") return SynapseValue(l == r && l.index() == r.index());
+    if (op == "==")  return SynapseValue(isEqual(l, r));
+    if (op == "!=")  return SynapseValue(!isEqual(l, r));
+    if (op == "===") return SynapseValue(isEqual(l, r) && l.index() == r.index());
     if (op == "<")   return SynapseValue(valueToDouble(l) < valueToDouble(r));
     if (op == ">")   return SynapseValue(valueToDouble(l) > valueToDouble(r));
     if (op == "<=")  return SynapseValue(valueToDouble(l) <= valueToDouble(r));
@@ -274,6 +342,12 @@ void Interpreter::visit(ProgramNode& n) {
 void Interpreter::visit(VarDeclNode& n) {
     SynapseValue val = eval(*n.value);
     currentEnv->set(n.name, val);
+}
+
+void Interpreter::visit(TypedVarDeclNode& n) {
+    SynapseValue val = eval(*n.value);
+    val = coerceToType(n.typeName, val, n.line, n.column);
+    currentEnv->setTyped(n.name, val, n.typeName);
 }
 
 void Interpreter::visit(AssignNode& n) {
