@@ -1,0 +1,40 @@
+# ── Mouse Automation Demo ─────────────────────────────────────────────────
+# Demonstrates the full MOUSE command surface for Synapse v0.3
+
+# Move to a coordinate
+mouse MOVE TO (500, 300);
+
+# Move without TO keyword (also valid)
+Mouse MOVE (100, 100);
+
+# Single left click at position
+MouSE CLICK LEFT AT (300, 400);
+
+# Right click at position
+MOUSE CLICK RIGHT AT (640, 480);
+
+# Middle click at position
+MOUSE CLICK MIDDLE AT (960, 540);
+
+# Click without AT (clicks at current cursor position)
+MOUSE CLICK LEFT;
+
+# Use a variable as the click target
+let target = (200, 150);
+MOUSE MOVE TO target;
+MOUSE CLICK LEFT AT target;
+
+# Function that moves mouse to a grid of points
+fn moveGrid(startX, startY, step, count) {
+    let i = 0;
+    let x = startX;
+    loop while (i < count) {
+        MOUSE MOVE TO (x, startY);
+        x += step;
+        i += 1;
+    }
+}
+
+moveGrid(100, 200, 50, 4);
+
+println "Mouse automation script complete.";

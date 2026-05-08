@@ -1,0 +1,14 @@
+# Wayland Compatibility Test
+let before = get_mouse_pos();
+println "Before move: " + before;
+
+MOUSE MOVE TO (100, 100);
+
+let after = get_mouse_pos();
+println "After move: " + after;
+
+if (before == after) {
+    println "VERDICT: Mouse did NOT move (Likely Wayland restriction).";
+} else {
+    println "VERDICT: Mouse moved!";
+}

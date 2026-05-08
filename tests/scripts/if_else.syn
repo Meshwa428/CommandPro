@@ -1,0 +1,14 @@
+let val = 10;
+if (val > 5) {
+    println "greater";
+} else {
+    println "smaller";
+}
+
+if (val < 5) {
+    println "smaller";
+} else {
+    if (val == 10) {
+        println "nested exact";
+    }
+}

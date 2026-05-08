@@ -1,0 +1,122 @@
+# ── Core Language Feature Test  (Synapse v0.2) ────────────────────────────
+
+# Variables and basic output
+let greeting = "Hello from Synapse v0.2!";
+println greeting;
+
+# Integers and floats
+let a = 10;
+let b = 3;
+println "a = " + a;
+println "b = " + b;
+
+# Arithmetic
+let sum     = a + b;
+let diff    = a - b;
+let product = a * b;
+let quotient = a / b;
+let floordiv = a // b;
+let remainder = a % b;
+let power   = 2 ** 8;
+println "sum:      " + sum;
+println "diff:     " + diff;
+println "product:  " + product;
+println "quotient: " + quotient;
+println "floordiv: " + floordiv;
+println "remainder:" + remainder;
+println "2^8:      " + power;
+
+# Booleans
+let yes = true;
+let no  = false;
+println "true and false = " + yes;
+println "false value    = " + no;
+
+# String concatenation
+let name = "Synapse";
+let ver  = 2;
+println "Language: " + name + " v0." + ver;
+
+# Compound assignment
+let x = 100;
+x += 50;
+println "x after += 50: " + x;
+x -= 30;
+println "x after -= 30: " + x;
+x *= 2;
+println "x after *= 2:  " + x;
+x /= 4;
+println "x after /= 4:  " + x;
+
+# Comparisons
+println "10 > 3:  " + (a > b);
+println "10 < 3:  " + (a < b);
+println "10 == 10:" + (a == a);
+println "10 != 3: " + (a != b);
+
+# If / else
+if (a > b) {
+    println "a is greater than b";
+} else {
+    println "b is greater than a";
+}
+
+# Nested if
+let score = 85;
+if (score >= 90) {
+    println "Grade: A";
+} else {
+    if (score >= 75) {
+        println "Grade: B";
+    } else {
+        println "Grade: C";
+    }
+}
+
+# Repeat loop
+println "Counting with repeat:";
+let counter = 0;
+repeat 5 times {
+    counter += 1;
+    println "  tick " + counter;
+}
+
+# While loop
+println "Countdown with while:";
+let n = 3;
+loop while (n > 0) {
+    println "  " + n;
+    n -= 1;
+}
+println "  Liftoff!";
+
+# Functions
+fn add(x, y) {
+    return x + y;
+}
+
+fn greet(who) {
+    println "Hello, " + who + "!";
+}
+
+fn factorial(num) {
+    if (num <= 1) {
+        return 1;
+    }
+    return num * factorial(num - 1);
+}
+
+println "add(7, 8) = " + add(7, 8);
+greet("World");
+println "5! = " + factorial(5);
+
+# Try / Catch
+try {
+    let bad = 1;
+    # This would normally cause an error in a real scenario
+    println "try block executed";
+} catch (err) {
+    println "Caught error: " + err;
+}
+
+println "--- All tests complete ---";

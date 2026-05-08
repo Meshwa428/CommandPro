@@ -1,0 +1,7 @@
+try {
+    let a = undefined_var;
+    println "Should not print";
+} catch (err) {
+    println "Caught error: " + err;
+}
+println "Survived";

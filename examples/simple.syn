@@ -1,0 +1,8 @@
+# Simple Synapse Script
+let message = "Hello from Synapse C++ Engine!";
+let number = 42;
+let floatnum = 3.14;
+
+println message;
+println number;
+println floatnum;

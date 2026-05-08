@@ -1,0 +1,16 @@
+println 10 > 5;
+println 10 < 5;
+println 10 >= 10;
+println 10 <= 5;
+println 10 == 10;
+println 10 != 5;
+
+# Strict equality
+println 10 === 10;
+println 10 === "10";
+println 10 == "10"; # Depending on current C++ impl, variant comparison handles this. Usually false.
+
+# Logical
+println true AND false;
+println true OR false;
+println NOT true;

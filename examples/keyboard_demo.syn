@@ -1,0 +1,22 @@
+# ── Keyboard Automation Demo ──────────────────────────────────────────────
+# Demonstrates the KEY command surface for Synapse v0.3
+
+# Type a string of text (character by character via X11)
+KEY TYPE "hello";
+
+# Press individual keys by X11 keysym name
+KEY PRESS "Return";
+KEY PRESS "space";
+KEY PRESS "a";
+KEY PRESS "z";
+
+# Type a variable's string value
+let msg = "synapse";
+KEY TYPE msg;
+
+# Combined scenario: press Tab to switch focus, then type
+KEY PRESS "Tab";
+KEY TYPE "automated input";
+KEY PRESS "Return";
+
+println "Keyboard automation script complete.";

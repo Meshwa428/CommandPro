@@ -1,105 +1,32 @@
-# Custom Control Language for AI-Driven Computer Interaction
+# Synapse
 
 ## Overview
-This project aims to create a custom language with SQL-like syntax to control a computer via an AI interface. The language provides commands to manipulate mouse movements, simulate keyboard actions, and automate repetitive tasks. The primary goal is to develop a flexible framework for training AI to execute tasks on a computer environment effectively.
+Synapse is a high-performance, cross-platform language written in C++ designed specifically to control a computer through AI interfaces or manual scripting. It provides a natural-language syntax mapped to underlying Object-Oriented paradigms to manipulate mouse movements, simulate keyboard actions, manage windows, and automate repetitive tasks. 
 
-## Current Implementation
-The following base commands and attributes have been implemented:
+Files use the `.syn` extension.
 
-### Base Commands
-1. **MOVE**: Move the mouse cursor or a window.
-   - Example: `MOVE MOUSE TO (X, Y);`
-  
-2. **PRESS**: Simulate a single key press or mouse button click.
-   - Example: `PRESS KEY [key_name];`
-  
-3. **HOLD**: Keep a key or button pressed until released.
-   - Example: `HOLD BUTTON [mouse_button];`
-  
-4. **TYPE**: Type a string of text using keyboard simulation.
-   - Example: `TYPE "your_text_here";`
+## Syntax & Grammar
+Synapse enforces a rigid grammar to remove ambiguity, particularly to make it easier for AI logic or parsers to execute without error.
 
-### Additional Features
-- **TIME**: Controls the duration for actions.
-- **WAIT**: Introduces pauses between actions.
-- **REPEAT**: Repeats actions a specified number of times.
-- **IF CONDITION**: Adds conditional logic to commands.
-- **SCROLL**: Scrolls the mouse wheel or window contents.
-- **CLOSE**: Closes an application or window.
-- **OPEN**: Opens an application or file.
-- **CAPTURE**: Captures the screen or a window.
-- **FOCUS**: Brings a specific window to the front.
+**Basic Grammar Structure:**
+`<ACTION> <TARGET> [ATTRIBUTES];`
 
-## Future Vision
-The future vision for this project includes:
-- Expanding the command set to include more advanced actions (e.g., drag-and-drop, context menu interactions).
-- Integrating machine learning models to enable adaptive learning and context-aware actions.
-- Developing a user-friendly interface for writing and testing scripts in this custom language.
-- Implementing a parser and interpreter to process the custom syntax and execute commands in real-time.
-- Building a community around this project to gather feedback, enhance features, and contribute new ideas.
-
-## Explanatory Part
-This custom language is designed to be intuitive and easy to use, similar to SQL. Developers can issue commands in a structured format, making it straightforward to understand and implement. The syntax allows for clear delineation between different types of actions (mouse movements, key presses, etc.) while maintaining flexibility in how those actions are executed.
-
-## Syntax
-The following is a brief overview of the syntax used in this language:
-
-### Command Syntax
+### Variables
 ```sql
-MOVE MOUSE TO (X, Y);          -- Move the mouse cursor to coordinates (X, Y)
-MOVE WINDOW [window_name] TO (X, Y);  -- Move a window to coordinates (X, Y)
-PRESS KEY [key_name];          -- Simulate a single key press
-HOLD KEY [key_name];           -- Hold a key down
-TYPE "your_text_here";         -- Type a string of text
-WAIT [duration];               -- Pause for a specified duration
-REPEAT [number] TIMES {         -- Repeat a block of code
-    [commands]
-};
-IF [condition] THEN {           -- Conditional logic
-    [commands]
-};
+let message = "Welcome to Synapse!";
+let speed = 1.5;
 ```
 
-## Examples
-Here are some practical examples to illustrate how to use the custom language:
+### Future Automation Features
+```sql
+MOUSE MOVE TO (300, 400);
+MOUSE CLICK LEFT AT (100, 300) TIMES 2;
+KEY PRESS SPACE;
+WINDOW OPEN "Notepad";
+```
 
-1. **Open a Browser and Type a URL:**
-   ```sql
-   OPEN APP "Browser";
-   WAIT 2s;  -- Wait for the app to open
-   TYPE "https://example.com";
-   PRESS KEY ENTER;  -- Press Enter to navigate
-   ```
-
-2. **Move Mouse and Hold a Key:**
-   ```sql
-   MOVE MOUSE TO (200, 300) TIME 5s;  -- Move mouse to coordinates over 5 seconds
-   HOLD KEY "A";  -- Hold down the "A" key
-   WAIT 2s;  -- Hold for 2 seconds
-   HOLD KEY "A";  -- Release the "A" key
-   ```
-
-3. **Conditional Logic Example:**
-   ```sql
-   IF WINDOW "Calculator" EXISTS THEN {
-       FOCUS WINDOW "Calculator";  -- Bring Calculator to the front
-       TYPE "123 + 456";  -- Type a calculation
-       PRESS KEY ENTER;  -- Press Enter to calculate
-   };
-   ```
-
-## What Next
-- **Documentation:** Further documentation will be developed to provide in-depth usage guides and tutorials for users.
-- **Community Engagement:** Creating a platform for developers to share their scripts and experiences using this language.
-- **Feature Expansion:** Gathering feedback to identify new features and improvements that can be implemented in future updates.
-- **Testing and Validation:** Establishing a robust testing framework to ensure reliability and performance of the commands.
-
-For contributions, feedback, or inquiries, please contact the project maintainer.
-
----
-
-Don't judge me, I am following [this](https://www.youtube.com/watch?v=apFUyLupFgE&list=PLysa8wRFCssxGKj_RxBWr3rwmjEYlJIpa) guys videos as guide.
-So most of the code could be copy/paste.
-All thanks goes to him, i am learning to make a compiler.
-
-**Thank you for your interest in this project!**  
+## Compiler/Interpreter Architecture (C++)
+This project is structured around a traditional compiler frontend with an interpreting backend built in C++:
+1. **Lexer**: Tokenizes raw `.syn` files.
+2. **Parser**: Generates an Abstract Syntax Tree (AST) mapping natural language actions into OOP structures.
+3. **Interpreter**: Executes the AST nodes using C++ OS-level libraries for rapid performance.
