@@ -1,5 +1,6 @@
 #pragma once
 #include <unordered_map>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -34,8 +35,11 @@ enum class ObjType {
 struct Obj {
     ObjType type;
     int refCount = 0;
-    virtual ~Obj() = default;
-    explicit Obj(ObjType t) : type(t), refCount(0) {}
+#ifdef SYNAPSE_PROFILER
+    static std::atomic<long long> totalAllocations;
+#endif
+    virtual ~Obj();
+    explicit Obj(ObjType t);
 };
 
 // ── Value Structure (16 bytes) ───────────────────────────────────────────

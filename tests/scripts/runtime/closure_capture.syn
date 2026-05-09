@@ -1,0 +1,15 @@
+# 11. Closure Capture Benchmark
+fn outer() {
+    let x = 10;
+    fn inner() {
+        return x;
+    }
+    return inner;
+}
+
+let f = outer();
+let i = 0;
+loop while (i < 1000000) {
+    f();
+    i = i + 1;
+}

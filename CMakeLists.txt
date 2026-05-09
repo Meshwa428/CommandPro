@@ -4,6 +4,11 @@ project(Synapse)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(SYNAPSE_PROFILER "Enable VM profiling and telemetry" OFF)
+if (SYNAPSE_PROFILER)
+    add_definitions(-DSYNAPSE_PROFILER)
+endif()
+
 include_directories(include)
 
 file(GLOB_RECURSE CORE_SRC

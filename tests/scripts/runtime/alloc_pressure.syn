@@ -1,0 +1,8 @@
+# 3. Allocation Pressure Benchmark
+let i = 0;
+loop while (i < 10000) {
+    let x = [1, 2, 3, 4, 5];
+    let y = (1, 2, 3);
+    let z = {"a": 1, "b": 2};
+    i = i + 1;
+}

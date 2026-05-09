@@ -1,11 +1,21 @@
 #include "value.h"
-#include <sstream>
+#include <atomic>
+#include <unordered_map>
 #include <cmath>
 #include <iomanip>
 
 namespace Synapse {
 
+#ifdef SYNAPSE_PROFILER
+std::atomic<long long> Obj::totalAllocations{0};
+#endif
 
+Obj::Obj(ObjType t) : type(t), refCount(0) {
+#ifdef SYNAPSE_PROFILER
+    totalAllocations++;
+#endif
+}
+Obj::~Obj() = default;
 
 ObjTuple::~ObjTuple() { for (auto& e : elements) decref(e); }
 ObjList::~ObjList()   { for (auto& e : elements) decref(e); }

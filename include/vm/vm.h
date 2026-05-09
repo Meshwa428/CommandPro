@@ -49,11 +49,22 @@ private:
 #ifdef SYNAPSE_PROFILER
     long long opcodeCounts[256];
     bool profilingEnabled = false;
+    
+    // Telemetry
+    long long totalAllocations = 0;
+    int maxStackDepth = 0;
+    int currentStackDepth = 0;
 #endif
 
     inline void pushV(SynapseValue value) {
         incref(value);
         *stackTop++ = value;
+#ifdef SYNAPSE_PROFILER
+        if (profilingEnabled) {
+            int depth = (int)(stackTop - stack.data());
+            if (depth > maxStackDepth) maxStackDepth = depth;
+        }
+#endif
     }
 
     inline SynapseValue popV() {

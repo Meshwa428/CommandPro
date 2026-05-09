@@ -109,11 +109,11 @@ InterpretResult VM::interpret(ObjFunction* function) {
         stackTop->as.i = 0;
         stackTop++;
     }
-    InterpretResult res = run();
+    InterpretResult result = run();
 #ifdef SYNAPSE_PROFILER
     if (profilingEnabled) dumpProfile();
 #endif
-    return res;
+    return result;
 }
 
 InterpretResult VM::run() {
@@ -602,13 +602,17 @@ InterpretResult VM::run() {
 
 #ifdef SYNAPSE_PROFILER
 void VM::dumpProfile() {
-    std::cout << "\n=== Opcode Profile ===\n";
+    std::cout << "\n=== VM Runtime Telemetry ===\n";
+    std::cout << "Total Allocations: " << Obj::totalAllocations.load() << "\n";
+    std::cout << "Max Stack Depth:   " << maxStackDepth << "\n";
+    std::cout << "----------------------------\n";
+    std::cout << "Opcode Frequencies:\n";
     for (int i = 0; i < 256; ++i) {
         if (opcodeCounts[i] > 0) {
-            std::cout << "OpCode " << i << ": " << opcodeCounts[i] << " calls\n";
+            std::cout << "  OpCode " << i << ": " << opcodeCounts[i] << "\n";
         }
     }
-    std::cout << "======================\n";
+    std::cout << "============================\n";
 }
 #endif
 

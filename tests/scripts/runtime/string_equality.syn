@@ -1,0 +1,8 @@
+# 8. String Equality Benchmark
+let i = 0;
+loop while (i < 1000000) {
+    if ("hello_world" == "hello_world") {
+        // success
+    }
+    i = i + 1;
+}
