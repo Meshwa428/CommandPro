@@ -77,7 +77,7 @@ private:
     // ── Helpers ───────────────────────────────────────────────────────────
     NodePtr parseTimeLiteral(const Token& tok);
     NodePtr parsePoint();          // (x, y)
-    NodeList parseArgList();       // comma-separated expressions
+    std::vector<NodePtr> parseArgList();       // comma-separated expressions
 
     // ── State ─────────────────────────────────────────────────────────────
     std::vector<Token> tokens;

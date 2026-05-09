@@ -1,0 +1,7 @@
+let s = now();
+let i = 0;
+loop while (i < 1000) { i = i + 1; }
+let e = now();
+println "Start: " + s;
+println "End:   " + e;
+println "Diff:  " + (e - s);

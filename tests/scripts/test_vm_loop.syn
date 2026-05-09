@@ -1,0 +1,5 @@
+let i = 0;
+loop while (i < 5) {
+    println "Loop: " + i;
+    i = i + 1;
+}

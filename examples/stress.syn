@@ -1,0 +1,11 @@
+fn stress() {
+    let sum = 0;
+    let i = 0;
+    loop while (i < 100000) {
+        sum = sum + i;
+        i = i + 1;
+    }
+    print "Final sum: ";
+    println sum;
+}
+stress();

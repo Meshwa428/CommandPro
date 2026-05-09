@@ -7,11 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include_directories(include)
 
 file(GLOB_RECURSE CORE_SRC
-    src/lexer/*.cpp
-    src/parser/*.cpp
-    src/interpreter/*.cpp
-    src/platform/*.cpp
-    src/main.cpp
+    "src/*.cpp"
 )
 
 add_executable(synapse ${CORE_SRC})

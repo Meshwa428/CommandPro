@@ -1,6 +1,9 @@
 #include "lexer/lexer.h"
 #include "parser/parser.h"
 #include "interpreter/interpreter.h"
+#include "vm/resolver.h"
+#include "vm/compiler.h"
+#include "vm/vm.h"
 #include "platform/platform.h"
 #include <iostream>
 #include <fstream>
@@ -24,7 +27,10 @@ int main(int argc, char* argv[]) {
         std::cerr << "Synapse v0.2.0\n"
                      "Usage:\n"
                      "  synapse run <script.syn>     Execute a script\n"
-                     "  synapse check <script.syn>   Validate syntax only\n";
+                     "  synapse check <script.syn>   Validate syntax only\n"
+                     "Options:\n"
+                     "  --vm                        Use Bytecode Virtual Machine\n"
+                     "  --mock                      Use mock platform for tests\n";
         return 1;
     }
 
@@ -47,8 +53,11 @@ int main(int argc, char* argv[]) {
         auto            ast = parser.parse();
 
         bool useMock = false;
+        bool useVM   = false;
         for (int i = 1; i < argc; ++i) {
-            if (std::string(argv[i]) == "--mock") useMock = true;
+            std::string arg = argv[i];
+            if (arg == "--mock") useMock = true;
+            if (arg == "--vm")   useVM   = true;
         }
 
         if (command == "check") {
@@ -64,8 +73,26 @@ int main(int argc, char* argv[]) {
             } else {
                 platform = Synapse::IPlatform::create();
             }
-            Synapse::Interpreter interp(platform);
-            interp.interpret(*ast);
+
+            if (useVM) {
+                Synapse::Resolver resolver;
+                resolver.resolve(*ast);
+                
+                Synapse::Compiler compiler;
+                auto* chunk = compiler.compile(*ast);
+                
+                Synapse::VM vm(platform);
+                vm.setGlobals(compiler.getGlobalNames());
+                if (vm.interpret(chunk) == Synapse::InterpretResult::RUNTIME_ERROR) {
+                    std::cerr << "[VM RuntimeError] Execution failed\n";
+                    decref(chunk);
+                    return 1;
+                }
+                decref(chunk);
+            } else {
+                Synapse::Interpreter interp(platform);
+                interp.interpret(*ast);
+            }
             return 0;
         }
 

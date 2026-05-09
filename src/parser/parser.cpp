@@ -103,17 +103,14 @@ NodePtr Parser::parseStatement() {
         case TokenType::MOUSE:      return parseMouseCommand();
         case TokenType::KEY:        return parseKeyCommand();
         case TokenType::APP:        return parseAppCommand();
-        default:
-            // Standalone function call: name(args);
-            if (check(TokenType::IDENTIFIER) &&
-                idx + 1 < tokens.size() &&
-                tokens[idx + 1].type == TokenType::LPAREN) {
-                NodePtr node = parseExpression(); // builds FuncCallNode
-                eat(TokenType::SEMICOLON);
-                return node;
-            }
-            // Assignment or compound assignment
-            return parseExpression();
+        default: {
+            int ln = cur().line, col = cur().column;
+            NodePtr expr = parseExpression();
+            if (check(TokenType::SEMICOLON)) eat(TokenType::SEMICOLON);
+            auto node = std::make_unique<ExpressionStmtNode>(std::move(expr));
+            node->line = ln; node->column = col;
+            return node;
+        }
     }
 }
 
@@ -142,7 +139,7 @@ NodePtr Parser::parseTypedVarDecl(const std::string& typeName) {
     eat(TokenType::EQUALS);
     NodePtr val = parseExpression();
     eat(TokenType::SEMICOLON);
-    auto node = std::make_unique<TypedVarDeclNode>(typeName, name, std::move(val));
+    auto node = std::make_unique<TypedVarDeclNode>(name, typeName, std::move(val));
     node->line = ln; node->column = col;
     return node;
 }
@@ -520,7 +517,7 @@ NodePtr Parser::parsePrimary() {
         // Empty tuple: ()
         if (check(TokenType::RPAREN)) {
             ++idx; // eat )
-            auto node = std::make_unique<TupleLiteralNode>(NodeList{});
+            auto node = std::make_unique<TupleLiteralNode>(std::vector<NodePtr>{});
             node->line = ln; node->column = col;
             return node;
         }
@@ -535,7 +532,7 @@ NodePtr Parser::parsePrimary() {
 
         // Has a comma — it's a Tuple
         eat(TokenType::COMMA);
-        NodeList elements;
+        std::vector<NodePtr> elements;
         elements.push_back(std::move(first));
 
         // Trailing comma after first element: (val,) → single-element tuple
@@ -596,7 +593,7 @@ NodePtr Parser::parsePrimary() {
         ++idx;
         if (check(TokenType::LPAREN)) {
             ++idx; // eat (
-            NodeList args = parseArgList();
+            std::vector<NodePtr> args = parseArgList();
             eat(TokenType::RPAREN);
             auto node = std::make_unique<FuncCallNode>(tok.value, std::move(args));
             node->line = tok.line; node->column = tok.column;
@@ -619,7 +616,7 @@ NodePtr Parser::parsePrimary() {
 NodePtr Parser::parseListLiteral() {
     int ln = cur().line, col = cur().column;
     eat(TokenType::LBRACKET);
-    NodeList elements;
+    std::vector<NodePtr> elements;
     while (!check(TokenType::RBRACKET) && !check(TokenType::END_OF_FILE)) {
         elements.push_back(parseExpression());
         if (!check(TokenType::RBRACKET)) eat(TokenType::COMMA);
@@ -653,20 +650,20 @@ NodePtr Parser::parseMapLiteral() {
 NodePtr Parser::parseTimeLiteral(const Token& tok) {
     std::string raw = tok.value;
     double amount = 0.0;
-    TimeUnit unit = TimeUnit::MS;
+    std::string unit = "ms";
 
     if (raw.size() >= 2 && raw.substr(raw.size()-2) == "ms") {
         amount = std::stod(raw.substr(0, raw.size()-2));
-        unit   = TimeUnit::MS;
+        unit   = "ms";
     } else if (raw.back() == 's') {
         amount = std::stod(raw.substr(0, raw.size()-1));
-        unit   = TimeUnit::S;
+        unit   = "s";
     } else if (raw.back() == 'm') {
         amount = std::stod(raw.substr(0, raw.size()-1));
-        unit   = TimeUnit::M;
+        unit   = "m";
     } else if (raw.back() == 'h') {
         amount = std::stod(raw.substr(0, raw.size()-1));
-        unit   = TimeUnit::H;
+        unit   = "h";
     }
 
     auto node = std::make_unique<TimeLiteralNode>(amount, unit);
@@ -674,8 +671,8 @@ NodePtr Parser::parseTimeLiteral(const Token& tok) {
     return node;
 }
 
-NodeList Parser::parseArgList() {
-    NodeList args;
+std::vector<NodePtr> Parser::parseArgList() {
+    std::vector<NodePtr> args;
     while (!check(TokenType::RPAREN) && !check(TokenType::END_OF_FILE)) {
         args.push_back(parseExpression());
         if (!check(TokenType::RPAREN)) eat(TokenType::COMMA);

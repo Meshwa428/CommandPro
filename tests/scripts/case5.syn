@@ -1,0 +1,8 @@
+let start = now();
+let l = 0;
+loop while (l < 5000) {
+    let t = (l, l + 1, l + 2);
+    l = l + 1;
+}
+let end = now();
+println "Time: " + (end - start) + "ms";
