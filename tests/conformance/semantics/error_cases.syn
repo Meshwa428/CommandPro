@@ -1,0 +1,22 @@
+# Expected Error Cases (Intentional failures)
+
+# 1. Undefined variable access
+# Expected: [RuntimeError] line 5: Undefined variable 'nonexistent'
+# println nonexistent;
+
+# 2. Assigning to constant/undefined? 
+# (Currently let is used for everything, but let's test shadowing again)
+let x = 1;
+{
+    let x = 2;
+    if (x != 2) { println "Shadowing Error"; }
+}
+if (x != 1) { println "Shadowing Restore Error"; }
+
+# 3. Call non-function
+# let y = 10;
+# y(); # Should be RuntimeError
+
+# 4. Wrong arg count
+fn test_args(a, b) { return a + b; }
+# test_args(1); # Should be RuntimeError

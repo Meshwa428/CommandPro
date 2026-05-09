@@ -1,0 +1,23 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "0 is truthy: false"
+# @EXPECT STDOUT "hello is truthy: true"
+# Truthiness Matrix
+
+fn is_truthy(val) {
+    if (val) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+println "0 is truthy: " + is_truthy(0);
+println "1 is truthy: " + is_truthy(1);
+println "empty string is truthy: " + is_truthy("");
+println "hello is truthy: " + is_truthy("hello");
+println "null is truthy: " + is_truthy(null);
+println "false is truthy: " + is_truthy(false);
+println "true is truthy: " + is_truthy(true);
+
+# Future: lists and maps once implemented
+# println "[] is truthy: " + is_truthy([]);

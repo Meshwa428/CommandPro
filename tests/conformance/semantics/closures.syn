@@ -1,0 +1,24 @@
+# @EXPECT EXIT 1
+# Closure Lifetime Test
+fn outer(val) {
+    let x = val;
+    fn inner() {
+        return x;
+    }
+    return inner;
+}
+
+let f1 = outer(100);
+let f2 = outer(200);
+
+if (f1() == 100) {
+    println "f1 OK: 100";
+} else {
+    println "f1 FAIL: " + f1();
+}
+
+if (f2() == 200) {
+    println "f2 OK: 200";
+} else {
+    println "f2 FAIL: " + f2();
+}

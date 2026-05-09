@@ -1,0 +1,4 @@
+# @EXPECT EXIT 1
+# @EXPECT STDERR "[LexerError]"
+let s = "unterminated
+println s;

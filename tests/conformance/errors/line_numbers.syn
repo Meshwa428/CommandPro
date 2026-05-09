@@ -1,0 +1,9 @@
+# @EXPECT EXIT 1
+# @EXPECT STDERR "[RuntimeError]"
+# @EXPECT STDERR "line 9"
+# Error Line Number Verification
+let x = 10;
+let y = 20;
+
+# Error here (undefined z)
+println x + y + z;

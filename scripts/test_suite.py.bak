@@ -1,0 +1,355 @@
+import subprocess
+import os
+import sys
+import time
+import statistics
+import argparse
+import hashlib
+import random
+
+# Configuration
+SYNAPSE_BIN = "./build/synapse"
+PYTHON_EXE = sys.executable
+CONFORMANCE_DIR = "tests/conformance"
+BENCHMARK_DIR = "tests/benchmarks/scripts"
+
+# --- Colors ---
+GREEN = '\033[0;32m'
+BLUE = '\033[0;34m'
+RED = '\033[0;31m'
+YELLOW = '\033[1;33m'
+BOLD = '\033[1m'
+NC = '\033[0m'
+
+# --- Python Baselines for Benchmarking ---
+def bench_alloc_pressure():
+    i = 0
+    while i < 10000:
+        x = [1, 2, 3, 4, 5]
+        y = (1, 2, 3)
+        z = {"a": 1, "b": 2}
+        i += 1
+
+def bench_branch_stress():
+    i = 0
+    x = 0
+    while i < 100000:
+        if i % 2 == 0: x += 1
+        else: x -= 1
+        i += 1
+
+def bench_closure_capture():
+    def outer():
+        x = 10
+        def inner(): return x
+        return inner
+    f = outer()
+    i = 0
+    while i < 1000000:
+        f()
+        i += 1
+
+def bench_dispatch_stress():
+    i = 0
+    while i < 1000000: i += 1
+
+global_counter = 0
+def bench_global_bench():
+    global global_counter
+    def test():
+        global global_counter
+        global_counter += 1
+    i = 0
+    while i < 1000000:
+        test()
+        i += 1
+
+def bench_map_stress():
+    m = {}
+    i = 0
+    while i < 10000:
+        m["key_" + str(i)] = i
+        i += 1
+    i = 0
+    while i < 10000:
+        x = m.get("key_" + str(i))
+        i += 1
+
+def bench_native_call_bench():
+    i = 0
+    while i < 100000: i += 1
+
+def bench_real_world_auto():
+    def findAndClick(targetName):
+        apps = ["Browser", "Terminal", "Code"]
+        i = 0
+        while i < len(apps):
+            if apps[i] == targetName: return True
+            i += 1
+        return False
+    i = 0
+    while i < 1000:
+        findAndClick("Browser")
+        i += 1
+
+def bench_stack_churn():
+    i = 0
+    while i < 100000:
+        x = (((((i + 1) * 2) - 3) / 4) % 5)
+        i += 1
+
+def bench_string_equality():
+    i = 0
+    while i < 1000000:
+        s1 = "hello_world"
+        s2 = "hello_world"
+        if s1 == s2: pass
+        i += 1
+
+PYTHON_BENCHMARKS = {
+    "alloc_pressure.syn": bench_alloc_pressure,
+    "branch_stress.syn": bench_branch_stress,
+    "closure_capture.syn": bench_closure_capture,
+    "dispatch_stress.syn": bench_dispatch_stress,
+    "global_bench.syn": bench_global_bench,
+    "map_stress.syn": bench_map_stress,
+    "native_call_bench.syn": bench_native_call_bench,
+    "real_world_auto.syn": bench_real_world_auto,
+    "stack_churn.syn": bench_stack_churn,
+    "string_equality.syn": bench_string_equality,
+}
+
+# --- Core Utility Functions ---
+
+def run_synapse(script, use_vm=True, extra_args=None):
+    cmd = [SYNAPSE_BIN, "run", script, "--mock"]
+    if use_vm: cmd.append("--vm")
+    if extra_args: cmd.extend(extra_args)
+    
+    start = time.perf_counter()
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    end = time.perf_counter()
+    
+    exec_time = (end - start) * 1000 # Default fallback
+    
+    # Try to get internal RESULT: time if available
+    for line in result.stdout.splitlines():
+        if line.startswith("RESULT:"):
+            try: exec_time = float(line.split(":")[1])
+            except: pass
+            
+    return result, exec_time
+
+def run_python_bench(script_name):
+    func = PYTHON_BENCHMARKS.get(script_name)
+    if not func: return 0.0
+    start = time.perf_counter()
+    func()
+    end = time.perf_counter()
+    return (end - start) * 1000
+
+# --- Subcommand Handlers ---
+
+def mode_conformance(args):
+    print(f"\n{BLUE}{BOLD}🚀 Running Synapse Conformance Suite (Edge Cases){NC}")
+    print("-" * 75)
+    
+    tests = [
+        ("lexer/unterminated_string.syn", 1, None, "[LexerError]"),
+        ("lexer/huge_identifier.syn", 0, "10", None),
+        ("lexer/numeric_overflow.syn", 1, None, "[ParseError]"),
+        ("lexer/weird_whitespace.syn", 0, "30", None),
+        ("parser/precedence.syn", 0, ["Precedence OK", "Grouping OK"], None),
+        ("parser/associativity.syn", 0, "Associativity OK", None),
+        ("semantics/truthiness.syn", 0, ["0 is truthy: false", "hello is truthy: true"], None),
+        ("semantics/shadowing.syn", 0, ["Inner x is 20: OK", "Outer x is still 10: OK"], None),
+        ("semantics/strings.syn", 0, ["Line 1\nLine 2", "Equality OK"], None),
+        ("semantics/recursion.syn", 0, ["Recursion Sum 100 OK", "Mutual Recursion OK"], None),
+        ("semantics/heavy_duty.syn", 0, ["Math OK", "Nested OK", "Fib 10 OK"], None),
+        ("semantics/collections.syn", 0, ["List mutation OK", "Map mutation OK"], None),
+        ("semantics/stress_500.syn", 0, "Stress OK", None),
+        ("semantics/err_undefined.syn", 1, None, "[RuntimeError]"),
+        ("semantics/err_div_zero.syn", 1, None, "[RuntimeError]"),
+        ("parser/deep_math.syn", 0, ["Deep Math OK", "Associativity OK"], None),
+        ("vm/stack_exhaustion.syn", 1, None, ["[VM RuntimeError]", "Stack overflow"]),
+        ("api/oal_errors.syn", 0, "OAL: Negative coords handled", None),
+    ]
+    
+    passed = 0
+    failed = 0
+    
+    for path, code, out, err in tests:
+        full_path = os.path.join(CONFORMANCE_DIR, path)
+        if not os.path.exists(full_path):
+            print(f"⚠️  MISSING: {path:<36} | SKIP")
+            continue
+            
+        res, _ = run_synapse(full_path, use_vm=args.vm)
+        
+        test_failed = False
+        errors = []
+        
+        if res.returncode != code:
+            test_failed = True
+            errors.append(f"Exit code mismatch: expected {code}, got {res.returncode}")
+            
+        if out:
+            outs = [out] if isinstance(out, str) else out
+            for s in outs:
+                if s not in res.stdout:
+                    test_failed = True
+                    errors.append(f"Stdout missing: '{s}'")
+                    
+        if err:
+            errs = [err] if isinstance(err, str) else err
+            for s in errs:
+                if s not in res.stderr:
+                    test_failed = True
+                    errors.append(f"Stderr missing: '{s}'")
+                    
+        if test_failed:
+            print(f"{RED}❌ FAIL: {path:<40}{NC} | ERROR")
+            for e in errors: print(f"   - {e}")
+            if args.verbose:
+                print(f"--- STDOUT ---\n{res.stdout}\n--- STDERR ---\n{res.stderr}")
+            failed += 1
+        else:
+            print(f"{GREEN}✅ PASS: {path:<40}{NC} | OK")
+            passed += 1
+            
+    print("-" * 75)
+    print(f"TOTAL: {passed + failed} | {GREEN}PASSED: {passed}{NC} | {RED}FAILED: {failed}{NC}")
+    return failed == 0
+
+def mode_benchmark(args):
+    print(f"\n{BLUE}{BOLD}🚀 Running Performance Benchmarks (n={args.iterations}){NC}")
+    print(f"Comparing Synapse {'VM' if args.vm else 'Interp'} vs. CPython Baseline")
+    print("-" * 85)
+    print(f"{'Benchmark':<30} | {'Syn Avg (ms)':>15} | {'Py Avg (ms)':>15} | {'Ratio':>10}")
+    print("-" * 85)
+    
+    scripts = [f for f in os.listdir(BENCHMARK_DIR) if f.endswith(".syn")]
+    scripts.sort()
+    
+    for script_name in scripts:
+        path = os.path.join(BENCHMARK_DIR, script_name)
+        syn_times = []
+        py_times = []
+        
+        failed = False
+        for _ in range(args.iterations):
+            res, t = run_synapse(path, use_vm=args.vm)
+            if res.returncode != 0:
+                failed = True
+                break
+            syn_times.append(t)
+            py_times.append(run_python_bench(script_name))
+            
+        if failed:
+            print(f"{script_name:<30} | {RED}{'FAILED':>15}{NC} | {'N/A':>15} | {'N/A':>10}")
+            continue
+            
+        avg_syn = statistics.mean(syn_times)
+        avg_py = statistics.mean(py_times)
+        ratio = avg_syn / avg_py if avg_py > 0 else 0
+        
+        color = GREEN if ratio < 1.0 else YELLOW if ratio < 5.0 else RED
+        print(f"{script_name:<30} | {avg_syn:>15.4f} | {avg_py:>15.4f} | {color}{ratio:>9.2f}x{NC}")
+        
+    print("-" * 85)
+
+def mode_stability(args):
+    print(f"\n{BLUE}{BOLD}🧐 Checking Stability & Determinism (n={args.iterations}){NC}")
+    script = "tests/functional/scenarios/stress_test.syn"
+    if not os.path.exists(script):
+        print(f"{RED}Error: stress_test.syn not found.{NC}")
+        return
+        
+    print(f"Target: {script}")
+    
+    hashes = set()
+    for i in range(args.iterations):
+        res, _ = run_synapse(script, use_vm=args.vm)
+        # Filter out non-deterministic lines (like those with execution times)
+        filtered_lines = []
+        for line in res.stdout.splitlines():
+            if "Time:" in line or "ms" in line or line.startswith("RESULT:"):
+                continue
+            filtered_lines.append(line)
+        
+        filtered_stdout = "\n".join(filtered_lines)
+        h = hashlib.sha256(filtered_stdout.encode()).hexdigest()
+        hashes.add(h)
+        if len(hashes) > 1:
+            print(f"{RED}❌ STABILITY FAILURE at run {i+1}!{NC}")
+            if args.verbose:
+                print(f"Diff detected. Current Output:\n{filtered_stdout}")
+            return False
+            
+    print(f"{GREEN}✅ STABILITY OK: {args.iterations}/{args.iterations} runs matched.{NC}")
+    return True
+
+def mode_fuzz(args):
+    print(f"\n{BLUE}{BOLD}👾 Running Syntax Fuzzer (n={args.iterations}){NC}")
+    
+    def generate_fuzz():
+        tokens = ["let", "x", "=", "10", ";", "if", "(", "true", ")", "{", "println", "\"hi\"", ";", "}", "+", "-", "*", "/", "while", "loop", "return", "fn", "f", "(", ")", "{", "}"]
+        return " ".join(random.choices(tokens, k=20))
+        
+    fuzz_file = "fuzz_temp.syn"
+    crashes = 0
+    
+    for i in range(args.iterations):
+        with open(fuzz_file, "w") as f:
+            f.write(generate_fuzz())
+            
+        res, _ = run_synapse(fuzz_file, use_vm=args.vm)
+        # We expect ParseError or LexerError, NOT Segmentation Fault (-11)
+        if res.returncode == -11 or res.returncode == 139:
+            print(f"{RED}💥 CRASH (Segfault) detected in iteration {i+1}!{NC}")
+            crashes += 1
+            
+    if os.path.exists(fuzz_file): os.remove(fuzz_file)
+    
+    if crashes == 0:
+        print(f"{GREEN}✅ FUZZING OK: {args.iterations} iterations, 0 crashes.{NC}")
+    else:
+        print(f"{RED}❌ FUZZING FAILED: {crashes} crashes detected.{NC}")
+    return crashes == 0
+
+# --- Main Entry Point ---
+
+def main():
+    parser = argparse.ArgumentParser(description="Synapse Unified Verification Tool")
+    parser.add_argument("mode", nargs="?", default="conformance", choices=["conformance", "benchmark", "fuzz", "stability", "all"],
+                        help="Execution mode (default: conformance)")
+    parser.add_argument("--vm", action="store_true", default=True, help="Use Bytecode VM (default: True)")
+    parser.add_argument("--interp", action="store_false", dest="vm", help="Use Tree-walking Interpreter")
+    parser.add_argument("-n", "--iterations", type=int, default=5, help="Number of iterations for bench/fuzz/stability")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Detailed output on failures")
+    
+    args = parser.parse_args()
+    
+    if not os.path.exists(SYNAPSE_BIN):
+        print(f"{RED}Error: {SYNAPSE_BIN} not found. Please compile first.{NC}")
+        sys.exit(1)
+        
+    success = True
+    
+    if args.mode in ["conformance", "all"]:
+        if not mode_conformance(args): success = False
+        
+    if args.mode in ["benchmark", "all"]:
+        mode_benchmark(args)
+        
+    if args.mode in ["stability", "all"]:
+        if not mode_stability(args): success = False
+        
+    if args.mode in ["fuzz", "all"]:
+        if not mode_fuzz(args): success = False
+        
+    if not success:
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

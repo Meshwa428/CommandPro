@@ -1,0 +1,4 @@
+# Multiline String
+let s = "line 1
+line 2";
+println s;

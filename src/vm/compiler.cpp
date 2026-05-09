@@ -23,6 +23,7 @@ ObjFunction* Compiler::compile(ProgramNode& program) {
 
 void Compiler::emitByte(uint8_t byte, int line) {
     current()->code.push_back(byte);
+    current()->lines.push_back(line);
 }
 
 void Compiler::emitBytes(uint8_t b1, uint8_t b2, int line) {
@@ -262,14 +263,21 @@ void Compiler::visit(FuncDeclNode& n) {
     incref(fn);
     functionStack.push_back(fn);
     n.body->accept(*this);
+    emitByte(OP_NULL, n.line);
     emitByte(OP_RETURN, n.line);
     auto compiledFn = functionStack.back();
     functionStack.pop_back();
     emitConstant(compiledFn, n.line);
-    int index = getGlobalIndex(n.name);
-    emitByte(OP_DEFINE_GLOBAL, n.line);
-    emitByte((index >> 8) & 0xff, n.line);
-    emitByte(index & 0xff, n.line);
+    
+    if (n.isGlobal) {
+        int index = getGlobalIndex(n.name);
+        emitByte(OP_DEFINE_GLOBAL, n.line);
+        emitByte((index >> 8) & 0xff, n.line);
+        emitByte(index & 0xff, n.line);
+    } else {
+        emitBytes(OP_SET_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+        emitByte(OP_POP, n.line); // Func decl shouldn't leave val on stack
+    }
     decref(compiledFn);
 }
 
@@ -310,6 +318,13 @@ void Compiler::visit(IndexAccessNode& n) {
     n.object->accept(*this);
     n.index->accept(*this);
     emitByte(OP_INDEX_GET, n.line);
+}
+
+void Compiler::visit(IndexSetNode& n) {
+    n.object->accept(*this);
+    n.index->accept(*this);
+    n.value->accept(*this);
+    emitByte(OP_INDEX_SET, n.line);
 }
 
 void Compiler::visit(ExpressionStmtNode& n) {
@@ -363,22 +378,24 @@ void Compiler::visit(AppListNode& n) {
 void Compiler::visit(RepeatNode& n) {
     n.count->accept(*this);
     int loopStart = static_cast<int>(current()->code.size());
-    emitByte(OP_CONSTANT, n.line);
-    int zero = makeConstant(0LL);
-    emitByte((zero >> 8) & 0xff, n.line);
-    emitByte(zero & 0xff, n.line);
+    
+    emitByte(OP_DUP, n.line);
+    emitConstant(0LL, n.line);
     emitByte(OP_GREATER, n.line);
+    
     int exitJump = emitJump(OP_JUMP_IF_FALSE, n.line);
-    emitByte(OP_POP, n.line);
+    emitByte(OP_POP, n.line); // Pop the boolean result of '>'
+    
     n.body->accept(*this);
-    emitByte(OP_CONSTANT, n.line);
-    int one = makeConstant(1LL);
-    emitByte((one >> 8) & 0xff, n.line);
-    emitByte(one & 0xff, n.line);
+    
+    emitConstant(1LL, n.line);
     emitByte(OP_SUBTRACT, n.line);
+    
     emitLoop(loopStart, n.line);
+    
     patchJump(exitJump);
-    emitByte(OP_POP, n.line);
+    emitByte(OP_POP, n.line); // Pop the boolean
+    emitByte(OP_POP, n.line); // Pop the count
 }
 
 void Compiler::visit(AskNode& n) {

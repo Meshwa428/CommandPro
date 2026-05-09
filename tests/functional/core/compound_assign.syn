@@ -1,0 +1,17 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "15"
+# @EXPECT STDOUT "12"
+# @EXPECT STDOUT "24"
+# @EXPECT STDOUT "6"
+# @EXPECT STDOUT "0"
+let x = 10;
+x += 5;
+println x;
+x -= 3;
+println x;
+x *= 2;
+println x;
+x /= 4;
+println x;
+x %= 2;
+println x;

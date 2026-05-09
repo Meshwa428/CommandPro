@@ -1,0 +1,14 @@
+# Collection Mutation Semantics (Reference vs Value)
+let a = [1, 2, 3];
+let b = a;
+
+# If reference, changing b[0] should change a[0]
+# Note: map/list indexing assignment might be unsupported yet, so this might fail at compile time.
+# But we need to define the test.
+
+# For now, let's test if simple assignment results in same reference
+if (a == b) {
+    println "a and b are same reference: OK";
+} else {
+    println "a and b are copies: FAIL (if ref expected)";
+}

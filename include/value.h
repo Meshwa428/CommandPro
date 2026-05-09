@@ -10,6 +10,7 @@
 #include <cstdint>
 
 namespace Synapse {
+struct ASTNode;
 
 // ── Value Types ──────────────────────────────────────────────────────────
 enum class ValueType {
@@ -28,6 +29,7 @@ enum class ObjType {
     LIST,
     MAP,
     FUNC,
+    INTERP_FUNC,
     NATIVE
 };
 
@@ -113,11 +115,20 @@ struct ObjMap : public Obj {
     ~ObjMap();
 };
 
+struct ObjInterpFunction : public Obj {
+    std::string name;
+    std::vector<std::string> params;
+    ASTNode* body;
+    std::shared_ptr<void> closure; // Use void* to avoid circular dep with Environment
+    explicit ObjInterpFunction() : Obj(ObjType::INTERP_FUNC), body(nullptr) {}
+};
+
 struct ObjFunction : public Obj {
     std::string name;
     int arity = 0;
     int maxSlots = 0;
     std::vector<uint8_t> code;
+    std::vector<int> lines;
     std::vector<SynapseValue> constants;
     explicit ObjFunction() : Obj(ObjType::FUNC) {}
     ~ObjFunction();

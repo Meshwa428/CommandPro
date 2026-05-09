@@ -125,12 +125,16 @@ public:
     void visit(ListLiteralNode&)     override;
     void visit(MapLiteralNode&)      override;
     void visit(IndexAccessNode&)     override;
+    void visit(IndexSetNode&)        override;
     void visit(ExpressionStmtNode&)  override;
 
 private:
     SynapseValue eval(ASTNode& node);
     SynapseValue applyBinaryOp(const std::string& op, const SynapseValue& l, const SynapseValue& r);
     SynapseValue applyCompound(const std::string& op, const SynapseValue& l, const SynapseValue& r);
+    
+    void setLastValue(SynapseValue v);
+    void setReturnValue(SynapseValue v);
     
     std::shared_ptr<Environment>                          currentEnv;
     SynapseValue                                          lastValue;

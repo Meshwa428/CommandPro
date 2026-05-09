@@ -1,0 +1,15 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "Associativity OK"
+# Associativity: 10 - 5 - 2 should be 3 (Left Associative)
+if (10 - 5 - 2 == 3) {
+    println "Associativity OK: 10 - 5 - 2 = 3";
+} else {
+    println "Associativity FAIL";
+}
+
+# Division: 100 / 10 / 2 should be 5
+if (100 / 10 / 2 == 5) {
+    println "Associativity OK: 100 / 10 / 2 = 5";
+} else {
+    println "Associativity FAIL";
+}

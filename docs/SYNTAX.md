@@ -46,6 +46,7 @@ x === y    # strict type equality
 x AND y
 x OR y
 NOT x
+! x
 ```
 
 ---
@@ -192,4 +193,10 @@ let b = BOOL 0;
 ```sql
 # This is a comment
 let x = 10;  # inline comment
+
+/* 
+   This is a block comment.
+   It can span multiple lines.
+   /* They can even be nested! */
+*/
 ```

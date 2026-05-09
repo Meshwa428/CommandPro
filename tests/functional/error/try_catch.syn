@@ -1,0 +1,12 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "Caught error: Undefined variable"
+# @EXPECT STDOUT "Survived"
+# @EXPECT SKIP_VM
+try {
+    # @EXPECT SKIP_VM
+    let a = undefined_var;
+    println "Should not print";
+} catch (err) {
+    println "Caught error: " + err;
+}
+println "Survived";

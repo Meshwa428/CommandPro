@@ -1,0 +1,10 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "world"
+let outer = "hello";
+
+fn modify() {
+    outer = "world";
+}
+
+modify();
+println outer;

@@ -1,0 +1,12 @@
+# Loop Edge Cases
+let i = 0;
+loop while (i < 0) {
+    println "BAD";
+}
+println "Zero iterations OK";
+
+i = 0;
+loop while (i < 1) {
+    println "One iteration OK";
+    i = i + 1;
+}

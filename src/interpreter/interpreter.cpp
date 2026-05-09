@@ -45,18 +45,18 @@ SynapseValue Interpreter::eval(ASTNode& node) {
     return lastValue;
 }
 
-void Interpreter::visit(IntLiteralNode& n)   { lastValue = n.value; }
-void Interpreter::visit(FloatLiteralNode& n) { lastValue = n.value; }
-void Interpreter::visit(StringLiteralNode& n){ lastValue = makeString(n.value); }
-void Interpreter::visit(BoolLiteralNode& n)  { lastValue = n.value; }
-void Interpreter::visit(NullLiteralNode& n)  { lastValue = SynapseValue(); }
+void Interpreter::visit(IntLiteralNode& n)   { setLastValue(n.value); }
+void Interpreter::visit(FloatLiteralNode& n) { setLastValue(n.value); }
+void Interpreter::visit(StringLiteralNode& n){ setLastValue(makeString(n.value)); }
+void Interpreter::visit(BoolLiteralNode& n)  { setLastValue(n.value); }
+void Interpreter::visit(NullLiteralNode& n)  { setLastValue(SynapseValue()); }
 void Interpreter::visit(TimeLiteralNode& n)  { 
-    SynapseValue v; v.type = ValueType::VAL_TIME; v.as.ms = n.toMs(); lastValue = v; 
+    SynapseValue v; v.type = ValueType::VAL_TIME; v.as.ms = n.toMs(); setLastValue(v); 
 }
 
 void Interpreter::visit(IdentifierNode& n) {
     try {
-        lastValue = currentEnv->get(n.name, n.line, n.column);
+        setLastValue(currentEnv->get(n.name, n.line, n.column));
     } catch (const std::exception& e) {
         std::cerr << "Failed to get variable: " << n.name << " at " << n.line << ":" << n.column << std::endl;
         throw;
@@ -79,7 +79,10 @@ SynapseValue Interpreter::applyBinaryOp(const std::string& op, const SynapseValu
         if (l.type == ValueType::VAL_INT && r.type == ValueType::VAL_INT) return l.as.i * r.as.i;
         return valueToDouble(l) * valueToDouble(r);
     }
-    if (op == "/") return valueToDouble(l) / valueToDouble(r);
+    if (op == "/") {
+        if (valueToDouble(r) == 0.0) throw RuntimeError("Division by zero");
+        return valueToDouble(l) / valueToDouble(r);
+    }
     if (op == "//") {
         long long den = valueToInt(r);
         if (den == 0) throw RuntimeError("Division by zero");
@@ -114,15 +117,16 @@ void Interpreter::visit(BinaryExprNode& n) {
     SynapseValue l = eval(*n.left);
     SynapseValue r = eval(*n.right);
     lastValue = applyBinaryOp(n.op, l, r);
+    setLastValue(lastValue);
 }
 
 void Interpreter::visit(UnaryExprNode& n) {
     SynapseValue val = eval(*n.operand);
     if (n.op == "-") {
-        if (val.type == ValueType::VAL_INT) lastValue = -val.as.i;
-        else lastValue = -valueToDouble(val);
-    } else if (n.op == "NOT") {
-        lastValue = !valueToBool(val);
+        if (val.type == ValueType::VAL_INT) setLastValue(-val.as.i);
+        else setLastValue(-valueToDouble(val));
+    } else if (n.op == "NOT" || n.op == "!") {
+        setLastValue(!valueToBool(val));
     }
 }
 
@@ -210,33 +214,63 @@ void Interpreter::visit(RepeatNode& n) {
 }
 
 void Interpreter::visit(ReturnNode& n) {
-    returnValue = n.value ? eval(*n.value) : SynapseValue();
+    setReturnValue(n.value ? eval(*n.value) : SynapseValue());
     isReturning = true;
 }
 
 void Interpreter::visit(FuncDeclNode& n) {
-    SynapseFunction fn;
-    fn.name = n.name; fn.params = n.params; fn.body = n.body.get(); fn.closure = currentEnv;
-    functions[n.name] = fn;
+    auto* fn = new ObjInterpFunction();
+    fn->name = n.name;
+    fn->params = n.params;
+    fn->body = n.body.get();
+    fn->closure = std::static_pointer_cast<void>(currentEnv);
+    
+    currentEnv->define(n.name, SynapseValue(fn));
+}
+
+void Interpreter::setLastValue(SynapseValue v) {
+    incref(v);
+    decref(lastValue);
+    lastValue = v;
+}
+
+void Interpreter::setReturnValue(SynapseValue v) {
+    incref(v);
+    decref(returnValue);
+    returnValue = v;
 }
 
 void Interpreter::visit(FuncCallNode& n) {
     std::vector<SynapseValue> args;
     for (auto& arg : n.args) args.push_back(eval(*arg));
+    
+    // Check builtins first
     if (builtins.count(n.name)) {
-        lastValue = (*builtins[n.name])(args);
+        setLastValue((*builtins[n.name])(args));
         return;
     }
-    if (!functions.count(n.name)) throw RuntimeError("Undefined function: '" + n.name + "'", n.line, n.column);
-    SynapseFunction& fn = functions[n.name];
-    if (args.size() != fn.params.size()) throw RuntimeError("Function '" + n.name + "' expects " + std::to_string(fn.params.size()) + " arguments, got " + std::to_string(args.size()), n.line, n.column);
-    auto localEnv = std::make_shared<Environment>(fn.closure);
-    for (size_t i = 0; i < fn.params.size(); ++i) localEnv->define(fn.params[i], args[i]);
+    
+    // Lookup function in environment
+    SynapseValue fnVal = currentEnv->get(n.name, n.line, n.column);
+    if (fnVal.type != ValueType::VAL_OBJ || fnVal.as.obj->type != ObjType::INTERP_FUNC) {
+        throw RuntimeError("'" + n.name + "' is not a function", n.line, n.column);
+    }
+    
+    auto* fn = static_cast<ObjInterpFunction*>(fnVal.as.obj);
+    if (args.size() != fn->params.size()) {
+        throw RuntimeError("Function '" + n.name + "' expects " + std::to_string(fn->params.size()) + " arguments, got " + std::to_string(args.size()), n.line, n.column);
+    }
+    
+    auto localEnv = std::make_shared<Environment>(std::static_pointer_cast<Environment>(fn->closure));
+    for (size_t i = 0; i < fn->params.size(); ++i) localEnv->define(fn->params[i], args[i]);
+    
     auto savedEnv = currentEnv; currentEnv = localEnv;
     bool savedReturning = isReturning; isReturning = false;
     SynapseValue savedReturnValue = returnValue; returnValue = SynapseValue();
-    fn.body->accept(*this);
-    lastValue = returnValue;
+    
+    fn->body->accept(*this);
+    
+    setLastValue(returnValue);
     currentEnv = savedEnv; isReturning = savedReturning; returnValue = savedReturnValue;
 }
 
@@ -296,7 +330,7 @@ void Interpreter::visit(ListLiteralNode& n) {
 }
 
 void Interpreter::visit(MapLiteralNode& n) {
-    lastValue = makeMap();
+    setLastValue(makeMap());
     auto mapObj = static_cast<ObjMap*>(lastValue.as.obj);
     for (auto& [k, v] : n.items) {
         SynapseValue key = eval(*k);
@@ -314,6 +348,35 @@ void Interpreter::visit(IndexAccessNode& n) {
         else if (obj.as.obj->type == ObjType::MAP) lastValue = static_cast<ObjMap*>(obj.as.obj)->items[valueToString(idx)];
         else if (obj.as.obj->type == ObjType::STR) lastValue = makeString(std::string(1, static_cast<ObjString*>(obj.as.obj)->chars[valueToInt(idx)]));
     }
+}
+
+void Interpreter::visit(IndexSetNode& n) {
+    SynapseValue obj = eval(*n.object);
+    SynapseValue idx = eval(*n.index);
+    SynapseValue val = eval(*n.value);
+    
+    if (obj.type == ValueType::VAL_OBJ) {
+        if (obj.as.obj->type == ObjType::LIST) {
+            auto* list = static_cast<ObjList*>(obj.as.obj);
+            long long i = valueToInt(idx);
+            if (i >= 0 && i < (long long)list->elements.size()) {
+                decref(list->elements[i]);
+                incref(val);
+                list->elements[i] = val;
+            } else throw RuntimeError("List index out of bounds", n.line, n.column);
+        } else if (obj.as.obj->type == ObjType::MAP) {
+            auto* map = static_cast<ObjMap*>(obj.as.obj);
+            std::string key = valueToString(idx);
+            if (map->items.count(key)) decref(map->items[key]);
+            incref(val);
+            map->items[key] = val;
+        } else {
+            throw RuntimeError("Object type does not support index assignment", n.line, n.column);
+        }
+    } else {
+        throw RuntimeError("Index assignment requires an object", n.line, n.column);
+    }
+    setLastValue(val);
 }
 
 void Interpreter::visit(ExpressionStmtNode& n) {

@@ -1,0 +1,28 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "Inner x is 20: OK"
+# @EXPECT STDOUT "Outer x is still 10: OK"
+# Scope Shadowing Test
+let x = 10;
+{
+    let x = 20;
+    if (x == 20) {
+        println "Inner x is 20: OK";
+    } else {
+        println "Inner x is NOT 20: FAIL";
+    }
+}
+if (x == 10) {
+    println "Outer x is still 10: OK";
+} else {
+    println "Outer x is NOT 10: FAIL";
+}
+
+# Nested Shadowing
+{
+    let x = 30;
+    {
+        let x = 40;
+        if (x == 40) { println "Deep inner OK"; }
+    }
+    if (x == 30) { println "Mid inner OK"; }
+}

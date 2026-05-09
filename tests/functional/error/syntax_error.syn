@@ -1,0 +1,4 @@
+# @EXPECT EXIT 1
+# @EXPECT STDERR "[ParseError]"
+let x = 10
+println x;

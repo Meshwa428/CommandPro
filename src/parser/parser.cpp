@@ -103,6 +103,7 @@ NodePtr Parser::parseStatement() {
         case TokenType::MOUSE:      return parseMouseCommand();
         case TokenType::KEY:        return parseKeyCommand();
         case TokenType::APP:        return parseAppCommand();
+        case TokenType::LBRACE:     return parseBlock();
         default: {
             int ln = cur().line, col = cur().column;
             NodePtr expr = parseExpression();
@@ -312,47 +313,48 @@ NodePtr Parser::parseReturn() {
 NodePtr Parser::parseExpression() { return parseAssignment(); }
 
 NodePtr Parser::parseAssignment() {
-    // Peek: IDENTIFIER followed by = or compound-assign
-    if (check(TokenType::IDENTIFIER)) {
-        size_t saved = idx;
-        std::string name = tokens[idx].value;
-        int ln = tokens[idx].line, col = tokens[idx].column;
-        ++idx;
+    NodePtr left = parseOr();
 
-        // Compound assignment
-        static const std::pair<TokenType,std::string> compounds[] = {
-            {TokenType::PLUS_EQ,     "+"}, {TokenType::MINUS_EQ,    "-"},
-            {TokenType::STAR_EQ,     "*"}, {TokenType::SLASH_EQ,    "/"},
-            {TokenType::PERCENT_EQ,  "%"}, {TokenType::FLOORDIV_EQ,"//"},
-            {TokenType::POWER_EQ,   "**"}, {TokenType::AMP_EQ,      "&"},
-            {TokenType::PIPE_EQ,    "|"}, {TokenType::CARET_EQ,    "^"},
-            {TokenType::LSHIFT_EQ, "<<"}, {TokenType::RSHIFT_EQ,  ">>"},
-        };
-        for (auto& [tt, op] : compounds) {
-            if (check(tt)) {
-                ++idx;
-                NodePtr val = parseExpression();
-                eat(TokenType::SEMICOLON);
-                auto node = std::make_unique<CompoundAssignNode>(name, op, std::move(val));
-                node->line = ln; node->column = col;
-                return node;
-            }
-        }
-
-        // Plain assignment (not ==)
-        if (check(TokenType::EQUALS)) {
-            ++idx;
-            NodePtr val = parseExpression();
-            eat(TokenType::SEMICOLON);
-            auto node = std::make_unique<AssignNode>(name, std::move(val));
+    if (match(TokenType::EQUALS)) {
+        int ln = prev().line, col = prev().column;
+        NodePtr value = parseAssignment();
+        
+        if (auto* id = dynamic_cast<IdentifierNode*>(left.get())) {
+            auto node = std::make_unique<AssignNode>(id->name, std::move(value));
+            node->line = ln; node->column = col;
+            return node;
+        } else if (auto* idx = dynamic_cast<IndexAccessNode*>(left.get())) {
+            auto node = std::make_unique<IndexSetNode>(std::move(idx->object), std::move(idx->index), std::move(value));
             node->line = ln; node->column = col;
             return node;
         }
-
-        // Not an assignment — backtrack
-        idx = saved;
+        throw error(prev(), "Invalid assignment target");
     }
-    return parseOr();
+
+    // Compound assignment
+    static const std::pair<TokenType,std::string> compounds[] = {
+        {TokenType::PLUS_EQ,     "+"}, {TokenType::MINUS_EQ,    "-"},
+        {TokenType::STAR_EQ,     "*"}, {TokenType::SLASH_EQ,    "/"},
+        {TokenType::PERCENT_EQ,  "%"}, {TokenType::FLOORDIV_EQ,"//"},
+        {TokenType::POWER_EQ,   "**"}, {TokenType::AMP_EQ,      "&"},
+        {TokenType::PIPE_EQ,    "|"}, {TokenType::CARET_EQ,    "^"},
+        {TokenType::LSHIFT_EQ, "<<"}, {TokenType::RSHIFT_EQ,  ">>"},
+    };
+
+    for (auto& [tt, op] : compounds) {
+        if (match(tt)) {
+            int ln = prev().line, col = prev().column;
+            NodePtr value = parseAssignment();
+            if (auto* id = dynamic_cast<IdentifierNode*>(left.get())) {
+                auto node = std::make_unique<CompoundAssignNode>(id->name, op, std::move(value));
+                node->line = ln; node->column = col;
+                return node;
+            }
+            throw error(prev(), "Invalid compound assignment target");
+        }
+    }
+
+    return left;
 }
 
 NodePtr Parser::parseOr() {
@@ -558,9 +560,13 @@ NodePtr Parser::parsePrimary() {
     if (tok.type == TokenType::NUMBER) {
         ++idx;
         std::string v = tok.value;
-        if (v.find('.') != std::string::npos)
-            return std::make_unique<FloatLiteralNode>(std::stod(v));
-        return std::make_unique<IntLiteralNode>(std::stoll(v));
+        try {
+            if (v.find('.') != std::string::npos)
+                return std::make_unique<FloatLiteralNode>(std::stod(v));
+            return std::make_unique<IntLiteralNode>(std::stoll(v));
+        } catch (...) {
+            error(tok, "Numeric literal overflow: " + v);
+        }
     }
     if (tok.type == TokenType::STRING) {
         ++idx;

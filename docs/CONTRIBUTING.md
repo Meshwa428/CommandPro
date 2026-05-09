@@ -84,12 +84,28 @@ Add test cases in `tests/`.
 ---
 
 ## Running Tests
+
+Synapse uses a unified test runner for all verification tasks.
+
 ```bash
-cd build
-cmake ..
-make
-ctest
+# Run all tests (Conformance + Functional)
+python3 scripts/test_suite.py all --vm
+
+# Run performance benchmarks
+python3 scripts/test_suite.py benchmark
+
+# Run the crash fuzzer
+python3 scripts/test_suite.py fuzz -n 1000
 ```
+
+### Adding New Tests
+1. Create a `.syn` file in `tests/conformance` or `tests/functional`.
+2. Add expectation metadata at the top of the file:
+   ```synapse
+   # @EXPECT EXIT 0
+   # @EXPECT STDOUT "Expected Output"
+   ```
+3. Run the test suite; the new test will be automatically discovered.
 
 ---
 

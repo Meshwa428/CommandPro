@@ -1,0 +1,22 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "12"
+# @EXPECT STDOUT "120"
+# @EXPECT STDOUT "null"
+fn add(a, b) {
+    return a + b;
+}
+
+println add(5, 7);
+
+fn factorial(n) {
+    if (n <= 1) { return 1; }
+    return n * factorial(n - 1);
+}
+
+println factorial(5);
+
+# Missing return
+fn no_ret() {
+    let x = 1;
+}
+println no_ret();

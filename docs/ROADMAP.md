@@ -4,9 +4,15 @@
 
 ---
 
-## Current Status: v0.1.0 — Foundation
+## Current Status: v0.8.0 — VM Optimization (Active)
 
-The initial skeleton of the C++ Lexer, Parser, and Interpreter has been created. Simple variable declarations and print statements execute successfully.
+The language has transitioned from a tree-walking interpreter to a high-performance **Bytecode VM**. Current efforts are focused on microarchitectural tuning, memory optimization, and establishing a rigorous benchmarking pipeline.
+
+### Recent Milestones
+- [x] **Bytecode VM Transition**: Full transition from recursive AST interpretation to stack-based opcode execution.
+- [x] **Telemetry & Profiling**: Integrated a zero-overhead instrumentation system to track opcode frequency, allocations, and stack depth.
+- [x] **Benchmarking Suite**: Established a comparative benchmarking pipeline (`tests/runtime_benchmark.py`) against CPython baselines.
+- [x] **Constant Folding**: Implemented a pre-compilation pass to fold static expressions.
 
 ---
 
@@ -112,14 +118,14 @@ The initial skeleton of the C++ Lexer, Parser, and Interpreter has been created.
 **Goal:** Transition from a naive tree-walking interpreter to a high-performance Bytecode VM.
 
 **Planned Features:**
-- [ ] **Variable Slot Compilation**: Replace string-based `unordered_map` lookups in the execution loop with zero-cost index-based slots.
-- [ ] **Flattened Scope Frames**: Replace recursive `Environment` pointers with a flat stack of activation records (frames) to eliminate deep scope chain traversal.
-- [ ] **Bytecode Compiler**: Implement a compilation pass that transforms the AST into a linear stream of opcodes.
-- [ ] **Stack-based Virtual Machine**: Replace `ASTVisitor::visit` recursion with a high-speed dispatch loop (Computed Gotos / Opcode Switching).
-- [ ] **Memory Management Strategy**: Implement a dedicated Garbage Collection (GC) or an optimized Arena + Reference Counting hybrid to handle closures and async tasks safely.
-- [ ] **Optimized Value System**: Investigate Tagged Unions or NaN-boxing to reduce `std::variant` and `std::shared_ptr` overhead.
-- [ ] **Constant Folding & Interning**: Pre-calculate static expressions and intern all strings to minimize runtime allocations.
-- [ ] **Closure & Upvalue Support**: Implement proper lexical closures for callbacks and async tasks.
+- [x] **Variable Slot Compilation**: Replace string-based `unordered_map` lookups in the execution loop with zero-cost index-based slots.
+- [x] **Flattened Scope Frames**: Replace recursive `Environment` pointers with a flat stack of activation records (frames).
+- [x] **Bytecode Compiler**: Implement a compilation pass that transforms the AST into a linear stream of opcodes.
+- [x] **Stack-based Virtual Machine**: High-speed dispatch loop replacing AST recursion.
+- [ ] **Memory Management Strategy**: Implement a dedicated Garbage Collection (GC) (Current: Ref-Counting + Manual management).
+- [x] **Optimized Value System**: `SynapseValue` variant with `shared_ptr` to heap objects.
+- [x] **Constant Folding & Interning**: Pre-calculate static expressions and intern all strings.
+- [ ] **Closure & Upvalue Support**: (In Progress) Implement proper lexical closures.
 
 ---
 

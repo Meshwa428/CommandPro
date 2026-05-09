@@ -1,0 +1,17 @@
+# Type Coercion & Comparison Semantics
+
+println "1 + 2.5 = " + (1 + 2.5); # Should be float
+println "true + 1 = " + (true + 1); # Should it fail or 2? Synapse currently likely fails or coercions
+# println "hello" + 5; # String concatenation
+
+# Comparison
+println "10 == 10: " + (10 == 10);
+println "10 == 10.0: " + (10 == 10.0);
+println "10 == \"10\": " + (10 == "10");
+println "null == false: " + (null == false);
+println "null == 0: " + (null == 0);
+
+# Strings
+let s1 = "test";
+let s2 = "test";
+println "s1 == s2: " + (s1 == s2); # Interning/Value equality

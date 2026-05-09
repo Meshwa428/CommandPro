@@ -1,0 +1,9 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "Deep Math OK"
+# @EXPECT STDOUT "Associativity OK"
+# Deeply Nested Expression
+let x = (1 + (2 + (3 + (4 + (5 + (6 + (7 + (8 + (9 + 10)))))))));
+if (x == 55) { println "Deep Math OK"; } else { println "Deep Math FAIL: " + x; }
+
+let y = ((((10 - 1) - 1) - 1) - 1);
+if (y == 6) { println "Associativity OK"; }

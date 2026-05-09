@@ -1,0 +1,35 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "Line 1"
+# @EXPECT STDOUT "Line 2"
+# @EXPECT STDOUT "Equality OK"
+# String Stress Suite
+
+# 1. Escaping
+println "Line 1\nLine 2";
+println "Tab\tSpace";
+println "Quote \" Inside";
+
+# 2. Concatenation
+let s1 = "Hello";
+let s2 = "World";
+println s1 + " " + s2;
+
+# 3. Concatenation with other types
+println "Value: " + 42;
+println "Bool: " + true;
+println "Float: " + 3.14;
+println "Null: " + null;
+
+# 4. Empty Strings
+let empty = "";
+println "Empty: [" + empty + "]";
+if (empty) { println "Empty is truthy: FAIL"; } else { println "Empty is falsy: OK"; }
+
+# 5. Indexing (if supported)
+let text = "Synapse";
+println "First: " + text[0];
+println "Last: " + text[6];
+
+# 6. Equality
+if ("abc" == "abc") { println "Equality OK"; }
+if ("abc" != "def") { println "Inequality OK"; }

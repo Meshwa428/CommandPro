@@ -1,0 +1,23 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "Precedence OK"
+# @EXPECT STDOUT "Grouping OK"
+# Precedence Test: 1 + 2 * 3 should be 7
+if (1 + 2 * 3 == 7) {
+    println "Precedence OK: 1 + 2 * 3 = 7";
+} else {
+    println "Precedence FAIL: 1 + 2 * 3 != 7";
+}
+
+# Precedence Test: (1 + 2) * 3 should be 9
+if ((1 + 2) * 3 == 9) {
+    println "Grouping OK: (1 + 2) * 3 = 9";
+} else {
+    println "Grouping FAIL";
+}
+
+# Logic Precedence: true or false and false should be true (and before or)
+if (true or false and false) {
+    println "Logic Precedence OK: or vs and";
+} else {
+    println "Logic Precedence FAIL";
+}

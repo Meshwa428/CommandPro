@@ -14,7 +14,7 @@ enum class NodeType {
     IF_STMT, WHILE_LOOP, REPEAT_LOOP, FUNC_DECL, FUNC_CALL, RETURN_STMT,
     PRINT_STMT, ASK_STMT, WAIT_STMT, TRY_CATCH, 
     MOUSE_MOVE, MOUSE_CLICK, KEY_PRESS, KEY_TYPE, APP_OPEN, APP_LIST,
-    TUPLE_LIT, LIST_LIT, MAP_LIT, INDEX_ACCESS,
+    TUPLE_LIT, LIST_LIT, MAP_LIT, INDEX_ACCESS, INDEX_SET,
     EXPR_STMT
 };
 
@@ -45,7 +45,7 @@ class RepeatNode; class WhileNode; class FuncDeclNode;
 class FuncCallNode; class TryCatchNode; class MouseMoveNode;
 class MouseClickNode; class KeyPressNode; class KeyTypeNode;
 class AppOpenNode; class AppListNode; class ListLiteralNode;
-class MapLiteralNode; class IndexAccessNode; class ExpressionStmtNode;
+class MapLiteralNode; class IndexAccessNode; class IndexSetNode; class ExpressionStmtNode;
 
 class ASTVisitor {
 public:
@@ -85,6 +85,7 @@ public:
     virtual void visit(ListLiteralNode&) = 0;
     virtual void visit(MapLiteralNode&) = 0;
     virtual void visit(IndexAccessNode&) = 0;
+    virtual void visit(IndexSetNode&) = 0;
     virtual void visit(ExpressionStmtNode&) = 0;
 };
 
@@ -363,6 +364,14 @@ class IndexAccessNode : public ASTNode {
 public:
     NodePtr object, index;
     IndexAccessNode(NodePtr o, NodePtr i) : ASTNode(NodeType::INDEX_ACCESS), object(std::move(o)), index(std::move(i)) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+class IndexSetNode : public ASTNode {
+public:
+    NodePtr object, index, value;
+    IndexSetNode(NodePtr o, NodePtr i, NodePtr v) 
+        : ASTNode(NodeType::INDEX_SET), object(std::move(o)), index(std::move(i)), value(std::move(v)) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 

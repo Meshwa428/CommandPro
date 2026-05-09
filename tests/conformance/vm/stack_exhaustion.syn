@@ -1,0 +1,10 @@
+# @EXPECT EXIT 1
+# @EXPECT STDERR "[VM RuntimeError]"
+# @EXPECT STDERR "Stack overflow"
+# Stack Exhaustion (Infinite Recursion)
+fn recurse() {
+    return recurse();
+}
+
+println "Starting recursion...";
+recurse();

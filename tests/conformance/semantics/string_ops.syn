@@ -1,0 +1,5 @@
+# String Operations
+let a = "Hello";
+let b = " World";
+println a + b;
+# println a[1]; # If indexing supported

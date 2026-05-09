@@ -1,0 +1,28 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "13"
+# @EXPECT STDOUT "7"
+# @EXPECT STDOUT "30"
+# @EXPECT STDOUT "3.33333"
+# @EXPECT STDOUT "3"
+# @EXPECT STDOUT "1"
+# @EXPECT STDOUT "100"
+# @EXPECT STDOUT "14"
+# @EXPECT STDOUT "20"
+# @EXPECT STDOUT "Num: 10"
+let a = 10;
+let b = 3;
+
+println a + b;
+println a - b;
+println a * b;
+println a / b;
+println a // b;
+println a % b;
+println a ** 2;
+
+# BODMAS
+println 2 + 3 * 4;
+println (2 + 3) * 4;
+
+# String concat
+println "Num: " + a;

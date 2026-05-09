@@ -1,0 +1,21 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "3"
+# @EXPECT STDOUT "3"
+# @EXPECT STDOUT "2"
+# @EXPECT STDOUT "1"
+let counter = 0;
+repeat 3 times {
+    counter += 1;
+}
+println counter;
+
+let n = 3;
+loop while (n > 0) {
+    println n;
+    n -= 1;
+}
+
+# Edge case: repeat 0 times
+repeat 0 times {
+    println "Should not print";
+}

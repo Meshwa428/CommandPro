@@ -1,0 +1,3 @@
+# @EXPECT EXIT 1
+# @EXPECT STDERR "Undefined variable"
+println unknown_variable;

@@ -41,6 +41,7 @@ private:
     SynapseValue* stackTop;
 
     std::vector<SynapseValue> globals;
+    std::vector<bool>         globalsDefined;
     std::unordered_map<std::string, int> globalNameMap;
     std::unordered_map<std::string, SynapseValue>  builtins;
     std::shared_ptr<IPlatform> platform;

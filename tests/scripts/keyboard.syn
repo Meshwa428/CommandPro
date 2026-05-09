@@ -1,4 +1,0 @@
-# Keyboard Automation Test
-KEY TYPE "hello synapse";
-KEY PRESS "Return";
-println "KEYBOARD_TEST_OK";

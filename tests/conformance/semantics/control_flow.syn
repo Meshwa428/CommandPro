@@ -1,0 +1,33 @@
+# Control Flow Edge Cases
+
+# 1. Repeat 0 times
+println "Start Repeat 0";
+repeat 0 times {
+    println "SHOULD NOT PRINT";
+}
+println "End Repeat 0";
+
+# 2. While loop false start
+let i = 10;
+loop while (i < 5) {
+    println "SHOULD NOT PRINT";
+}
+println "While loop skipped OK";
+
+# 3. Short-circuiting
+fn bomb() {
+    println "BOMB EXPLODED: FAIL";
+    return true;
+}
+
+if (false and bomb()) {
+    println "Short-circuit and: FAIL";
+} else {
+    println "Short-circuit and: OK";
+}
+
+if (true or bomb()) {
+    println "Short-circuit or: OK";
+} else {
+    println "Short-circuit or: FAIL";
+}

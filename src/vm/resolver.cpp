@@ -187,6 +187,12 @@ void Resolver::visit(IndexAccessNode& n) {
     n.index->accept(*this);
 }
 
+void Resolver::visit(IndexSetNode& n) {
+    n.object->accept(*this);
+    n.index->accept(*this);
+    n.value->accept(*this);
+}
+
 void Resolver::visit(ExpressionStmtNode& n) {
     n.expression->accept(*this);
 }

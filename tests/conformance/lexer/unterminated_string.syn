@@ -1,0 +1,4 @@
+# @EXPECT EXIT 1
+# @EXPECT STDERR "[LexerError]"
+# Lexer Edge Case 1: Unterminated String
+let s = "this string never ends

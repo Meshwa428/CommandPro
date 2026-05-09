@@ -1,0 +1,32 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "List mutation OK"
+# @EXPECT STDOUT "Map mutation OK"
+# Collections Stress Test
+
+# 1. List Mutation
+let l = [10, 20, 30];
+l[1] = 99;
+if (l[1] == 99) { println "List mutation OK"; } else { println "List mutation FAIL: " + l[1]; }
+
+# 2. List Append (if supported)
+# l.push(40); # Not supported yet probably
+
+# 3. Map Mutation
+let m = {"a": 1, "b": 2};
+m["a"] = 100;
+m["c"] = 300;
+if (m["a"] == 100) { println "Map mutation OK"; }
+if (m["c"] == 300) { println "Map insertion OK"; }
+
+# 4. Nested Collections
+let nested = [[1, 2], {"key": [3, 4]}];
+if (nested[0][1] == 2) { println "Nested List OK"; }
+if (nested[1]["key"][0] == 3) { println "Nested Map OK"; }
+
+# 5. Iteration simulation
+let i = 0;
+let items = ["apple", "banana", "cherry"];
+loop while (i < 3) {
+    println "Item " + i + ": " + items[i];
+    i = i + 1;
+}

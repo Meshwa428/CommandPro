@@ -1,0 +1,6 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "30"
+# Mixed tabs and spaces and vertical tabs if supported
+let x=	10;
+let	y   = 20;
+println x + y;

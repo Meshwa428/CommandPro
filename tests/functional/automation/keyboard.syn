@@ -1,0 +1,8 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "KEYBOARD_TEST_OK"
+# @EXPECT STDOUT "[MOCK] KEY_TYPE hello synapse"
+# @EXPECT STDOUT "[MOCK] KEY_PRESS Return"
+# Keyboard Automation Test
+KEY TYPE "hello synapse";
+KEY PRESS "Return";
+println "KEYBOARD_TEST_OK";

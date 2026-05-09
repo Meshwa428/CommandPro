@@ -101,7 +101,26 @@ void Lexer::skipWhitespace() {
 }
 
 void Lexer::skipComment() {
-    while (cur != '\0' && cur != '\n') advance();
+    if (cur == '#') {
+        while (cur != '\0' && cur != '\n') advance();
+    } else if (cur == '/') {
+        advance(); // skip '/'
+        if (cur == '*') {
+            advance(); // skip '*'
+            int depth = 1;
+            while (cur != '\0' && depth > 0) {
+                if (cur == '/' && peek() == '*') {
+                    advance(); advance();
+                    depth++;
+                } else if (cur == '*' && peek() == '/') {
+                    advance(); advance();
+                    depth--;
+                } else {
+                    advance();
+                }
+            }
+        }
+    }
 }
 
 // ── Scanners ────────────────────────────────────────────────────────────────
@@ -224,6 +243,7 @@ Token Lexer::scanOperatorOrPunct() {
             return {TokenType::EQUALS,   "=",  startLine, startCol};
         case '!':
             if (cur == '=') { advance(); return {TokenType::NEQ,  "!=", startLine, startCol}; }
+            return {TokenType::NOT, "!", startLine, startCol};
             break;
         case '<':
             if (cur == '<') {
@@ -285,6 +305,7 @@ std::vector<Token> Lexer::tokenize() {
         }
 
         if (cur == '#') { skipComment(); continue; }
+        if (cur == '/' && peek() == '*') { skipComment(); continue; }
 
         if (std::isalpha(static_cast<unsigned char>(cur)) || cur == '_')
             tokens.push_back(scanIdentifierOrKeyword());

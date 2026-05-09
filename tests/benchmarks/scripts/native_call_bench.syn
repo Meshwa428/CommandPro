@@ -1,0 +1,9 @@
+let start = now();
+# 10. Native Call Overhead
+let i = 0;
+loop while (i < 100000) {
+    get_mouse_pos();
+    i = i + 1;
+}
+let end = now();
+println "RESULT:" + (end - start);

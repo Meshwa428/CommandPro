@@ -88,11 +88,13 @@ void VM::registerBuiltins() {
 void VM::setGlobals(const std::vector<std::string>& names) {
     for (auto& g : globals) decref(g);
     globals.assign(names.size(), SynapseValue());
+    globalsDefined.assign(names.size(), false);
     for (size_t i = 0; i < names.size(); ++i) {
         globalNameMap[names[i]] = static_cast<int>(i);
         if (builtins.count(names[i])) {
             globals[i] = builtins[names[i]];
             incref(globals[i]);
+            globalsDefined[i] = true;
         }
     }
 }
@@ -130,6 +132,14 @@ InterpretResult VM::run() {
     #define SYNAPSE_PROF_INC() 
 #endif
 
+    #define RUNTIME_ERROR(...) \
+        do { \
+            std::cerr << "[RuntimeError] " << currentFrame->chunk->name << " at line " << currentFrame->chunk->lines[currentFrame->ip - currentFrame->chunk->code.data() - 1] << ": "; \
+            fprintf(stderr, __VA_ARGS__); \
+            fprintf(stderr, "\n"); \
+            return InterpretResult::RUNTIME_ERROR; \
+        } while (0)
+
 #ifdef __GNUC__
     #define INTERPRETER_LOOP() \
         SYNAPSE_PROF_INC(); \
@@ -140,12 +150,12 @@ InterpretResult VM::run() {
     #define CASE(op) L_##op:
     static void* dispatch_table[] = {
         &&L_OP_CONSTANT, &&L_OP_CONSTANT_16, &&L_OP_NULL, &&L_OP_TRUE, &&L_OP_FALSE,
-        &&L_OP_POP, &&L_OP_GET_LOCAL, &&L_OP_SET_LOCAL, &&L_OP_GET_GLOBAL, &&L_OP_SET_GLOBAL,
+        &&L_OP_POP, &&L_OP_DUP, &&L_OP_GET_LOCAL, &&L_OP_SET_LOCAL, &&L_OP_GET_GLOBAL, &&L_OP_SET_GLOBAL,
         &&L_OP_DEFINE_GLOBAL, &&L_OP_EQUAL, &&L_OP_STRICT_EQUAL, &&L_OP_GREATER, &&L_OP_LESS,
         &&L_OP_ADD, &&L_OP_SUBTRACT, &&L_OP_MULTIPLY, &&L_OP_DIVIDE, &&L_OP_MODULO,
         &&L_OP_INT_DIVIDE, &&L_OP_EXPONENT, &&L_OP_AND, &&L_OP_OR, &&L_OP_NOT, &&L_OP_NEGATE,
         &&L_OP_PRINT, &&L_OP_PRINTLN, &&L_OP_JUMP, &&L_OP_JUMP_IF_FALSE, &&L_OP_LOOP,
-        &&L_OP_CALL, &&L_OP_RETURN, &&L_OP_TUPLE, &&L_OP_LIST, &&L_OP_MAP, &&L_OP_INDEX_GET,
+        &&L_OP_CALL, &&L_OP_RETURN, &&L_OP_TUPLE, &&L_OP_LIST, &&L_OP_MAP, &&L_OP_INDEX_GET, &&L_OP_INDEX_SET,
         &&L_OP_MOUSE_MOVE, &&L_OP_MOUSE_CLICK, &&L_OP_KEY_PRESS, &&L_OP_KEY_TYPE,
         &&L_OP_WAIT, &&L_OP_ASK,
         &&L_OP_ADD_INT, &&L_OP_SUB_INT, &&L_OP_MUL_INT, &&L_OP_DIV_INT,
@@ -154,12 +164,6 @@ InterpretResult VM::run() {
         &&L_OP_GET_LOCAL_8
     };
     INTERPRETER_LOOP();
-#else
-    #define CASE(op) case op:
-    #define DISPATCH() break
-    for (;;) {
-        uint8_t instruction = *currentFrame->ip++;
-        switch (instruction) {
 #endif
 
             CASE(OP_CONSTANT) {
@@ -178,19 +182,9 @@ InterpretResult VM::run() {
             CASE(OP_TRUE)      pushV(true); DISPATCH();
             CASE(OP_FALSE)     pushV(false); DISPATCH();
             CASE(OP_POP)       decref(popV()); DISPATCH();
-            
+            CASE(OP_DUP)       pushV(peekV()); DISPATCH();
             CASE(OP_GET_LOCAL) {
                 slot = *currentFrame->ip++;
-                // Specialize!
-                if (slot <= 8) {
-                    currentFrame->ip[-2] = (uint8_t)(OP_GET_LOCAL_0 + slot);
-                    currentFrame->ip[-1] = 0x00; // NOP or padding? 
-                    // Actually, OP_GET_LOCAL takes 1 byte operand.
-                    // If we replace it with OP_GET_LOCAL_0, we have an extra byte.
-                    // We can't easily remove it without shifting everything.
-                    // Let's just use it as it is for now, maybe don't specialize GET_LOCAL yet if it's tricky.
-                    // Actually, we can keep the operand byte but ignore it in OP_GET_LOCAL_N.
-                }
                 pushV(stackBase[currentFrame->frameStart + slot]);
                 DISPATCH();
             }
@@ -208,6 +202,9 @@ InterpretResult VM::run() {
             CASE(OP_GET_GLOBAL) {
                 index = (uint16_t)(*currentFrame->ip++ << 8);
                 index |= *currentFrame->ip++;
+                if (!globalsDefined[index]) {
+                    RUNTIME_ERROR("Undefined variable");
+                }
                 pushV(globals[index]);
                 DISPATCH();
             }
@@ -221,6 +218,7 @@ InterpretResult VM::run() {
                     decref(gRef);
                 }
                 gRef = v;
+                globalsDefined[index] = true;
                 DISPATCH();
             }
             CASE(OP_SET_GLOBAL) {
@@ -233,6 +231,7 @@ InterpretResult VM::run() {
                     decref(gRef);
                 }
                 gRef = v;
+                globalsDefined[index] = true;
                 DISPATCH();
             }
 
@@ -297,6 +296,9 @@ InterpretResult VM::run() {
             }
             CASE(OP_DIVIDE) {
                 b = popV(); a = popV();
+                if (valueToDouble(b) == 0.0) {
+                    RUNTIME_ERROR("Division by zero");
+                }
                 pushV(valueToDouble(a) / valueToDouble(b));
                 decref(a); decref(b);
                 DISPATCH();
@@ -304,7 +306,9 @@ InterpretResult VM::run() {
             CASE(OP_INT_DIVIDE) {
                 b = popV(); a = popV();
                 long long den = valueToInt(b);
-                if (den == 0) return InterpretResult::RUNTIME_ERROR;
+                if (den == 0) {
+                    RUNTIME_ERROR("Division by zero");
+                }
                 pushV(valueToInt(a) / den);
                 decref(a); decref(b);
                 DISPATCH();
@@ -312,7 +316,9 @@ InterpretResult VM::run() {
             CASE(OP_MODULO) {
                 b = popV(); a = popV();
                 long long den = valueToInt(b);
-                if (den == 0) return InterpretResult::RUNTIME_ERROR;
+                if (den == 0) {
+                    RUNTIME_ERROR("Division by zero");
+                }
                 pushV(valueToInt(a) % den);
                 decref(a); decref(b);
                 DISPATCH();
@@ -428,17 +434,81 @@ InterpretResult VM::run() {
                 DISPATCH();
             }
             CASE(OP_INDEX_GET) {
-                resVal = popV(); a = popV();
-                if (a.type == ValueType::VAL_OBJ) {
-                    if (a.as.obj->type == ObjType::TUPLE) pushV(static_cast<ObjTuple*>(a.as.obj)->elements[valueToInt(resVal)]);
-                    else if (a.as.obj->type == ObjType::LIST) pushV(static_cast<ObjList*>(a.as.obj)->elements[valueToInt(resVal)]);
-                    else if (a.as.obj->type == ObjType::MAP) pushV(static_cast<ObjMap*>(a.as.obj)->items[valueToString(resVal)]);
-                    else if (a.as.obj->type == ObjType::STR) {
-                        resVal = makeString(std::string(1, static_cast<ObjString*>(a.as.obj)->chars[valueToInt(resVal)]));
-                        pushV(resVal); decref(resVal);
+                SynapseValue idxVal = popV();
+                SynapseValue coll = popV();
+                if (coll.type == ValueType::VAL_OBJ) {
+                    if (coll.as.obj->type == ObjType::STR) {
+                        int i = (int)valueToInt(idxVal);
+                        const std::string& s = static_cast<ObjString*>(coll.as.obj)->chars;
+                        if (i >= 0 && i < (int)s.length()) {
+                            SynapseValue res = makeString(std::string(1, s[i]));
+                            pushV(res);
+                            decref(res);
+                        } else {
+                            std::cerr << "[RuntimeError] String index out of bounds" << std::endl;
+                            return InterpretResult::RUNTIME_ERROR;
+                        }
+                    } else if (coll.as.obj->type == ObjType::TUPLE) {
+                        int i = (int)valueToInt(idxVal);
+                        auto* t = static_cast<ObjTuple*>(coll.as.obj);
+                        if (i >= 0 && i < (int)t->elements.size()) pushV(t->elements[i]);
+                        else {
+                            std::cerr << "[RuntimeError] Tuple index out of bounds" << std::endl;
+                            return InterpretResult::RUNTIME_ERROR;
+                        }
+                    } else if (coll.as.obj->type == ObjType::LIST) {
+                        int i = (int)valueToInt(idxVal);
+                        auto* l = static_cast<ObjList*>(coll.as.obj);
+                        if (i >= 0 && i < (int)l->elements.size()) pushV(l->elements[i]);
+                        else {
+                            std::cerr << "[RuntimeError] List index out of bounds" << std::endl;
+                            return InterpretResult::RUNTIME_ERROR;
+                        }
+                    } else if (coll.as.obj->type == ObjType::MAP) {
+                        auto* m = static_cast<ObjMap*>(coll.as.obj);
+                        std::string key = valueToString(idxVal);
+                        if (m->items.count(key)) pushV(m->items[key]);
+                        else pushV(SynapseValue()); // Return null for missing map keys
+                    } else { RUNTIME_ERROR("Indexing only supported on tuples, lists, and maps."); }
+                } else { RUNTIME_ERROR("Indexing requires an object."); }
+                
+                decref(coll);
+                decref(idxVal);
+                DISPATCH();
+            }
+            CASE(OP_INDEX_SET) {
+                SynapseValue val = popV();
+                SynapseValue idxVal = popV();
+                SynapseValue coll = popV();
+                if (coll.type == ValueType::VAL_OBJ) {
+                    if (coll.as.obj->type == ObjType::LIST) {
+                        int i = (int)valueToInt(idxVal);
+                        auto* l = static_cast<ObjList*>(coll.as.obj);
+                        if (i >= 0 && i < (int)l->elements.size()) {
+                            decref(l->elements[i]);
+                            incref(val);
+                            l->elements[i] = val;
+                        } else {
+                            std::cerr << "[RuntimeError] List index out of bounds" << std::endl;
+                            return InterpretResult::RUNTIME_ERROR;
+                        }
+                    } else if (coll.as.obj->type == ObjType::MAP) {
+                        auto* m = static_cast<ObjMap*>(coll.as.obj);
+                        std::string key = valueToString(idxVal);
+                        if (m->items.count(key)) decref(m->items[key]);
+                        incref(val);
+                        m->items[key] = val;
+                        } else {
+                            RUNTIME_ERROR("Invalid property access");
+                        }
+                    } else {
+                        RUNTIME_ERROR("Properties only supported on objects");
                     }
-                } else return InterpretResult::RUNTIME_ERROR;
-                decref(a); decref(resVal);
+                
+                pushV(val); // Assignment expression value
+                decref(coll);
+                decref(idxVal);
+                decref(val);
                 DISPATCH();
             }
 
@@ -514,8 +584,14 @@ InterpretResult VM::run() {
                 if (fnVal.type == ValueType::VAL_OBJ) {
                     if (fnVal.as.obj->type == ObjType::FUNC) {
                         auto function = static_cast<ObjFunction*>(fnVal.as.obj);
-                        if (argCount != function->arity) return InterpretResult::RUNTIME_ERROR;
-                        if (frameCount >= MAX_FRAMES) return InterpretResult::RUNTIME_ERROR;
+                        if (argCount != function->arity) {
+                            std::cerr << "[RuntimeError] Argument count mismatch" << std::endl;
+                            return InterpretResult::RUNTIME_ERROR;
+                        }
+                        if (frameCount >= MAX_FRAMES) {
+                            std::cerr << "[VM RuntimeError] Stack overflow" << std::endl;
+                            return InterpretResult::RUNTIME_ERROR;
+                        }
                         CallFrame& newFrame = callStack[frameCount++];
                         newFrame.chunk = function;
                         newFrame.ip = function->code.data();
@@ -541,8 +617,12 @@ InterpretResult VM::run() {
                         pushV(result);
                         for (auto& arg : args) decref(arg);
                         decref(result);
-                    } else return InterpretResult::RUNTIME_ERROR;
-                } else return InterpretResult::RUNTIME_ERROR;
+                    } else {
+                        RUNTIME_ERROR("Can only call functions or natives.");
+                    }
+                } else {
+                    RUNTIME_ERROR("Can only call objects.");
+                }
                 DISPATCH();
             }
 
@@ -578,20 +658,23 @@ InterpretResult VM::run() {
                 DISPATCH();
             }
             CASE(OP_DIV_INT) {
-                if (stackTop[-1].as.i == 0) return InterpretResult::RUNTIME_ERROR;
+                if (stackTop[-1].as.i == 0) {
+                    std::cerr << "[RuntimeError] Division by zero" << std::endl;
+                    return InterpretResult::RUNTIME_ERROR;
+                }
                 stackTop[-2].as.i /= stackTop[-1].as.i;
                 stackTop--;
                 DISPATCH();
             }
-            CASE(OP_GET_LOCAL_0) pushV(stackBase[currentFrame->frameStart + 0]); currentFrame->ip++; DISPATCH();
-            CASE(OP_GET_LOCAL_1) pushV(stackBase[currentFrame->frameStart + 1]); currentFrame->ip++; DISPATCH();
-            CASE(OP_GET_LOCAL_2) pushV(stackBase[currentFrame->frameStart + 2]); currentFrame->ip++; DISPATCH();
-            CASE(OP_GET_LOCAL_3) pushV(stackBase[currentFrame->frameStart + 3]); currentFrame->ip++; DISPATCH();
-            CASE(OP_GET_LOCAL_4) pushV(stackBase[currentFrame->frameStart + 4]); currentFrame->ip++; DISPATCH();
-            CASE(OP_GET_LOCAL_5) pushV(stackBase[currentFrame->frameStart + 5]); currentFrame->ip++; DISPATCH();
-            CASE(OP_GET_LOCAL_6) pushV(stackBase[currentFrame->frameStart + 6]); currentFrame->ip++; DISPATCH();
-            CASE(OP_GET_LOCAL_7) pushV(stackBase[currentFrame->frameStart + 7]); currentFrame->ip++; DISPATCH();
-            CASE(OP_GET_LOCAL_8) pushV(stackBase[currentFrame->frameStart + 8]); currentFrame->ip++; DISPATCH();
+            CASE(OP_GET_LOCAL_0) pushV(stackBase[currentFrame->frameStart + 0]); DISPATCH();
+            CASE(OP_GET_LOCAL_1) pushV(stackBase[currentFrame->frameStart + 1]); DISPATCH();
+            CASE(OP_GET_LOCAL_2) pushV(stackBase[currentFrame->frameStart + 2]); DISPATCH();
+            CASE(OP_GET_LOCAL_3) pushV(stackBase[currentFrame->frameStart + 3]); DISPATCH();
+            CASE(OP_GET_LOCAL_4) pushV(stackBase[currentFrame->frameStart + 4]); DISPATCH();
+            CASE(OP_GET_LOCAL_5) pushV(stackBase[currentFrame->frameStart + 5]); DISPATCH();
+            CASE(OP_GET_LOCAL_6) pushV(stackBase[currentFrame->frameStart + 6]); DISPATCH();
+            CASE(OP_GET_LOCAL_7) pushV(stackBase[currentFrame->frameStart + 7]); DISPATCH();
+            CASE(OP_GET_LOCAL_8) pushV(stackBase[currentFrame->frameStart + 8]); DISPATCH();
 #ifndef __GNUC__
             default: return InterpretResult::RUNTIME_ERROR;
         }

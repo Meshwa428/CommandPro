@@ -1,0 +1,18 @@
+# Typed Variable Enforcement
+
+# 1. Successful initialization
+int a = 10;
+float b = 3.14;
+str c = "hello";
+bool d = true;
+println "Types OK";
+
+# 2. Coercion
+int e = 10.9;
+if (e == 10) { println "Float to Int coercion OK"; }
+
+float f = 10;
+if (f == 10.0) { println "Int to Float coercion OK"; }
+
+# 3. Expected Failures (runtime error on mismatch)
+# These will be separated into individual tests for the runner

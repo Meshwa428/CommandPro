@@ -1,0 +1,28 @@
+# Advanced Function Tests
+
+# 1. Multiple arguments
+fn add3(a, b, c) {
+    return a + b + c;
+}
+if (add3(1, 2, 3) == 6) { println "Mult-arg OK"; }
+
+# 2. Returning from nested blocks
+fn nested_ret(x) {
+    if (x > 0) {
+        if (x > 10) {
+            return "high";
+        }
+        return "low";
+    }
+    return "none";
+}
+println nested_ret(15);
+println nested_ret(5);
+println nested_ret(0);
+
+# 3. Recursion deep (but not too deep)
+fn factorial(n) {
+    if (n < 2) { return 1; }
+    return n * factorial(n - 1);
+}
+println "Fact 5: " + factorial(5);

@@ -84,7 +84,7 @@ int main(int argc, char* argv[]) {
                 Synapse::VM vm(platform);
                 vm.setGlobals(compiler.getGlobalNames());
                 if (vm.interpret(chunk) == Synapse::InterpretResult::RUNTIME_ERROR) {
-                    std::cerr << "[VM RuntimeError] Execution failed\n";
+                    // Redundant - VM prints its own error
                     decref(chunk);
                     return 1;
                 }

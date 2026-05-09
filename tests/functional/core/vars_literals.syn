@@ -1,0 +1,28 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "42"
+# @EXPECT STDOUT "3.14"
+# @EXPECT STDOUT "true"
+# @EXPECT STDOUT "test"
+# @EXPECT STDOUT "500ms"
+# @EXPECT STDOUT "(10, 20)"
+# @EXPECT STDOUT "null"
+# @EXPECT STDOUT "now a string"
+let i = 42;
+let f = 3.14;
+let b = true;
+let s = "test";
+let t = 500ms;
+let p = (10, 20);
+let n = null;
+
+println i;
+println f;
+println b;
+println s;
+println t;
+println p;
+println n;
+
+# Overwrite with different types
+i = "now a string";
+println i;

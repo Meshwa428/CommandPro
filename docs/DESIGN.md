@@ -2,7 +2,7 @@
 
 > Version: 0.1.0 (Prototype)  
 > Status: Active Design  
-> Last Updated: 2026-05-08
+> Last Updated: 2026-05-09
 
 ---
 
@@ -85,8 +85,9 @@ Existing automation tools have fundamental limitations:
              └─────────┬─────────┘
                        │
              ┌─────────▼─────────┐
-             │   INTERPRETER     │  Phase 4: Execution (Current: Tree-Walking)
-             │   AST → OS calls  │  Phase 4 (Future): Bytecode VM
+             │   EXECUTION       │  Phase 4: Bytecode VM (Current Primary)
+             │   Bytecode/JIT    │  Phase 5: JIT Optimization (Planned)
+             │                   │  Fallback: Tree-walking Interpreter
              └─────────┬─────────┘
                        │
           ┌────────────▼────────────┐

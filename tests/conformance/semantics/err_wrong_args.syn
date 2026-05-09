@@ -1,0 +1,4 @@
+# @EXPECT EXIT 1
+# @EXPECT STDERR "[RuntimeError]"
+fn f(a, b) { return a + b; }
+f(1);

@@ -1,0 +1,4 @@
+# @EXPECT EXIT 1
+# @EXPECT STDERR "[LexerError]"
+# Invalid character
+let @ = 10;

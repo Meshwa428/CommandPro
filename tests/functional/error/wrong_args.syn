@@ -1,0 +1,7 @@
+# @EXPECT EXIT 1
+# @EXPECT STDERR "Argument count mismatch"
+fn my_func(a, b) {
+    return a + b;
+}
+
+my_func(1);

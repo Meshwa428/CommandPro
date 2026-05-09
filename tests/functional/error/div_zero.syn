@@ -1,0 +1,3 @@
+# @EXPECT EXIT 1
+# @EXPECT STDERR "Division by zero"
+println 10 / 0;

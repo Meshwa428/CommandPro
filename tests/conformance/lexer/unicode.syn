@@ -1,0 +1,5 @@
+# @EXPECT EXIT 1
+# @EXPECT STDERR "[LexerError]"
+# Unicode Identifiers (if supported, if not should fail gracefully)
+let 🚀 = "rocket";
+println 🚀;

@@ -96,7 +96,9 @@ void ConstantFolder::visit(BinaryExprNode& n) {
                 if (l.type == ValueType::VAL_INT && r.type == ValueType::VAL_INT) res = l.as.i * r.as.i;
                 else res = valueToDouble(l) * valueToDouble(r);
             } else if (n.op == "/") {
-                res = valueToDouble(l) / valueToDouble(r);
+                double den = valueToDouble(r);
+                if (den == 0.0) return;
+                res = valueToDouble(l) / den;
             } else if (n.op == "//") {
                 long long den = valueToInt(r);
                 if (den != 0) res = valueToInt(l) / den;
@@ -249,6 +251,12 @@ void ConstantFolder::visit(MapLiteralNode& n) {
 void ConstantFolder::visit(IndexAccessNode& n) {
     n.object = foldNode(std::move(n.object));
     n.index = foldNode(std::move(n.index));
+}
+
+void ConstantFolder::visit(IndexSetNode& n) {
+    n.object = foldNode(std::move(n.object));
+    n.index = foldNode(std::move(n.index));
+    n.value = foldNode(std::move(n.value));
 }
 
 void ConstantFolder::visit(AskNode& n) {}

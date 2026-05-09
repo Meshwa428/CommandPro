@@ -122,7 +122,11 @@ long long valueToInt(const SynapseValue& v) {
 }
 
 bool valuesAreEqual(const SynapseValue& a, const SynapseValue& b) {
-    if (a.type != b.type) return false;
+    if (a.type != b.type) {
+        if (a.type == ValueType::VAL_INT && b.type == ValueType::VAL_FLOAT) return (double)a.as.i == b.as.f;
+        if (a.type == ValueType::VAL_FLOAT && b.type == ValueType::VAL_INT) return a.as.f == (double)b.as.i;
+        return false;
+    }
     if (a.type != ValueType::VAL_OBJ) return a == b;
     Obj* ao = a.as.obj; Obj* bo = b.as.obj;
     if (ao == bo) return true;

@@ -50,6 +50,7 @@ public:
     void visit(ListLiteralNode&)     override;
     void visit(MapLiteralNode&)      override;
     void visit(IndexAccessNode&)     override;
+    void visit(IndexSetNode&)        override;
     void visit(ExpressionStmtNode&)  override;
 
     const std::vector<std::string>& getGlobalNames() const { return globalNames; }

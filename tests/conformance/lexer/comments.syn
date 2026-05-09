@@ -1,0 +1,7 @@
+# @EXPECT EXIT 0
+# Line comment
+/* Block 
+   comment */
+let x = 1; # trailing
+/* nested /* block */ comment */
+println x;

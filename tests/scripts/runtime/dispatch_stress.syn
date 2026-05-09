@@ -1,5 +1,0 @@
-# 1. Opcode Dispatch Stress
-let i = 0;
-loop while (i < 1000000) {
-    i = i + 1;
-}

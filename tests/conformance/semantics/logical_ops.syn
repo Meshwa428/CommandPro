@@ -1,0 +1,7 @@
+# Logical Ops
+println "NOT false: " + (NOT false);
+
+# Short-circuit check
+fn fail() { println "SHOULD NOT PRINT"; return false; }
+println false AND fail(); # Should not print
+println true OR fail();   # Should not print

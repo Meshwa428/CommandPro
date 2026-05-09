@@ -1,0 +1,12 @@
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "OAL: Negative coords handled"
+# OAL Error Handling
+
+# 1. Invalid mouse coords
+# Should not crash the VM
+mouse move to (-100, -100);
+println "OAL: Negative coords handled";
+
+# 2. Too many args to click
+# Note: click expects 0 or 1 arg (button index)
+# click(1, 2, 3); # This will be handled by wrong_args.syn

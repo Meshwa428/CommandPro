@@ -11,6 +11,7 @@ enum OpCode : uint8_t {
     OP_FALSE,
     
     OP_POP,           // Pop top of stack
+    OP_DUP,           // Duplicate top of stack
     
     OP_GET_LOCAL,     // [slot_index]
     OP_SET_LOCAL,     // [slot_index]
@@ -48,6 +49,7 @@ enum OpCode : uint8_t {
     OP_LIST,          // [element_count]
     OP_MAP,           // [item_count * 2]
     OP_INDEX_GET,
+    OP_INDEX_SET,
     
     // Automation opcodes
     OP_MOUSE_MOVE,

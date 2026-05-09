@@ -1,0 +1,15 @@
+# Deep Scope & Function Boundaries
+let g = 100;
+
+fn outer_scope() {
+    let a = 1;
+    {
+        let b = 2;
+        {
+            let c = 3;
+            println g + a + b + c; # 106
+        }
+    }
+}
+
+outer_scope();
