@@ -9,10 +9,23 @@ namespace Synapse {
 // ── Forward declarations ───────────────────────────────────────────────────
 class ASTVisitor;
 
+enum class NodeType {
+    INT_LIT, FLOAT_LIT, STR_LIT, BOOL_LIT, NULL_LIT, TIME_LIT,
+    TUPLE_LIT, LIST_LIT, MAP_LIT, IDENTIFIER,
+    BINARY_EXPR, UNARY_EXPR, BLOCK, PROGRAM,
+    VAR_DECL, TYPED_VAR_DECL, ASSIGN, COMPOUND_ASSIGN,
+    PRINT, ASK, WAIT, RETURN, IF, REPEAT, WHILE,
+    FUNC_DECL, FUNC_CALL, TRY_CATCH,
+    MOUSE_MOVE, MOUSE_CLICK, KEY_PRESS, KEY_TYPE, APP_OPEN, APP_LIST,
+    INDEX_ACCESS
+};
+
 // ── Base node ─────────────────────────────────────────────────────────────
 class ASTNode {
 public:
+    NodeType type;
     int line = 0, column = 0;
+    explicit ASTNode(NodeType t) : type(t) {}
     virtual ~ASTNode() = default;
     virtual void accept(ASTVisitor& v) = 0;
 };
@@ -23,30 +36,31 @@ using NodeList = std::vector<NodePtr>;
 // ── Literals ──────────────────────────────────────────────────────────────
 class IntLiteralNode : public ASTNode {
 public: long long value;
-    explicit IntLiteralNode(long long v) : value(v) {}
+    explicit IntLiteralNode(long long v) : ASTNode(NodeType::INT_LIT), value(v) {}
     void accept(ASTVisitor& v) override;
 };
 
 class FloatLiteralNode : public ASTNode {
 public: double value;
-    explicit FloatLiteralNode(double v) : value(v) {}
+    explicit FloatLiteralNode(double v) : ASTNode(NodeType::FLOAT_LIT), value(v) {}
     void accept(ASTVisitor& v) override;
 };
 
 class StringLiteralNode : public ASTNode {
 public: std::string value;
-    explicit StringLiteralNode(std::string v) : value(std::move(v)) {}
+    explicit StringLiteralNode(std::string v) : ASTNode(NodeType::STR_LIT), value(std::move(v)) {}
     void accept(ASTVisitor& v) override;
 };
 
 class BoolLiteralNode : public ASTNode {
 public: bool value;
-    explicit BoolLiteralNode(bool v) : value(v) {}
+    explicit BoolLiteralNode(bool v) : ASTNode(NodeType::BOOL_LIT), value(v) {}
     void accept(ASTVisitor& v) override;
 };
 
 class NullLiteralNode : public ASTNode {
 public:
+    NullLiteralNode() : ASTNode(NodeType::NULL_LIT) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -57,7 +71,7 @@ class TimeLiteralNode : public ASTNode {
 public:
     double   amount;
     TimeUnit unit;
-    TimeLiteralNode(double a, TimeUnit u) : amount(a), unit(u) {}
+    TimeLiteralNode(double a, TimeUnit u) : ASTNode(NodeType::TIME_LIT), amount(a), unit(u) {}
     // Returns duration in milliseconds
     long long toMs() const;
     void accept(ASTVisitor& v) override;
@@ -66,21 +80,21 @@ public:
 class TupleLiteralNode : public ASTNode {
 public:
     NodeList elements;
-    explicit TupleLiteralNode(NodeList e) : elements(std::move(e)) {}
+    explicit TupleLiteralNode(NodeList e) : ASTNode(NodeType::TUPLE_LIT), elements(std::move(e)) {}
     void accept(ASTVisitor& v) override;
 };
 
 class ListLiteralNode : public ASTNode {
 public:
     NodeList elements;
-    explicit ListLiteralNode(NodeList e) : elements(std::move(e)) {}
+    explicit ListLiteralNode(NodeList e) : ASTNode(NodeType::LIST_LIT), elements(std::move(e)) {}
     void accept(ASTVisitor& v) override;
 };
 
 class MapLiteralNode : public ASTNode {
 public:
     std::vector<std::pair<NodePtr, NodePtr>> items;
-    explicit MapLiteralNode(std::vector<std::pair<NodePtr, NodePtr>> i) : items(std::move(i)) {}
+    explicit MapLiteralNode(std::vector<std::pair<NodePtr, NodePtr>> i) : ASTNode(NodeType::MAP_LIT), items(std::move(i)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -88,14 +102,14 @@ class IndexAccessNode : public ASTNode {
 public:
     NodePtr object;
     NodePtr index;
-    IndexAccessNode(NodePtr obj, NodePtr idx) : object(std::move(obj)), index(std::move(idx)) {}
+    IndexAccessNode(NodePtr obj, NodePtr idx) : ASTNode(NodeType::INDEX_ACCESS), object(std::move(obj)), index(std::move(idx)) {}
     void accept(ASTVisitor& v) override;
 };
 
 // ── Identifier ────────────────────────────────────────────────────────────
 class IdentifierNode : public ASTNode {
 public: std::string name;
-    explicit IdentifierNode(std::string n) : name(std::move(n)) {}
+    explicit IdentifierNode(std::string n) : ASTNode(NodeType::IDENTIFIER), name(std::move(n)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -105,7 +119,7 @@ public:
     std::string op;
     NodePtr left, right;
     BinaryExprNode(std::string o, NodePtr l, NodePtr r)
-        : op(std::move(o)), left(std::move(l)), right(std::move(r)) {}
+        : ASTNode(NodeType::BINARY_EXPR), op(std::move(o)), left(std::move(l)), right(std::move(r)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -114,7 +128,7 @@ public:
     std::string op;
     NodePtr     operand;
     UnaryExprNode(std::string o, NodePtr n)
-        : op(std::move(o)), operand(std::move(n)) {}
+        : ASTNode(NodeType::UNARY_EXPR), op(std::move(o)), operand(std::move(n)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -122,12 +136,15 @@ public:
 class BlockNode : public ASTNode {
 public:
     NodeList statements;
+    bool     needsScope = true;
+    BlockNode() : ASTNode(NodeType::BLOCK) {}
     void accept(ASTVisitor& v) override;
 };
 
 class ProgramNode : public ASTNode {
 public:
     NodeList statements;
+    ProgramNode() : ASTNode(NodeType::PROGRAM) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -136,7 +153,7 @@ public:
     std::string name;
     NodePtr     value;
     VarDeclNode(std::string n, NodePtr v)
-        : name(std::move(n)), value(std::move(v)) {}
+        : ASTNode(NodeType::VAR_DECL), name(std::move(n)), value(std::move(v)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -148,7 +165,7 @@ public:
     std::string name;
     NodePtr     value;
     TypedVarDeclNode(std::string type, std::string n, NodePtr v)
-        : typeName(std::move(type)), name(std::move(n)), value(std::move(v)) {}
+        : ASTNode(NodeType::TYPED_VAR_DECL), typeName(std::move(type)), name(std::move(n)), value(std::move(v)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -157,7 +174,7 @@ public:
     std::string name;
     NodePtr     value;
     AssignNode(std::string n, NodePtr v)
-        : name(std::move(n)), value(std::move(v)) {}
+        : ASTNode(NodeType::ASSIGN), name(std::move(n)), value(std::move(v)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -167,7 +184,7 @@ public:
     std::string op;   // e.g. "+", "-", "*"
     NodePtr     value;
     CompoundAssignNode(std::string n, std::string o, NodePtr v)
-        : name(std::move(n)), op(std::move(o)), value(std::move(v)) {}
+        : ASTNode(NodeType::COMPOUND_ASSIGN), name(std::move(n)), op(std::move(o)), value(std::move(v)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -175,7 +192,7 @@ class PrintNode : public ASTNode {
 public:
     NodePtr value;
     bool    newline;
-    PrintNode(NodePtr v, bool nl) : value(std::move(v)), newline(nl) {}
+    PrintNode(NodePtr v, bool nl) : ASTNode(NodeType::PRINT), value(std::move(v)), newline(nl) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -185,21 +202,21 @@ public:
     std::string varName;
     std::string typeCast; // "INT", "FLOAT", "STR", "" = raw string
     AskNode(std::string p, std::string var, std::string tc)
-        : prompt(std::move(p)), varName(std::move(var)), typeCast(std::move(tc)) {}
+        : ASTNode(NodeType::ASK), prompt(std::move(p)), varName(std::move(var)), typeCast(std::move(tc)) {}
     void accept(ASTVisitor& v) override;
 };
 
 class WaitNode : public ASTNode {
 public:
     NodePtr duration; // expected to be TimeLiteralNode or IdentifierNode
-    explicit WaitNode(NodePtr d) : duration(std::move(d)) {}
+    explicit WaitNode(NodePtr d) : ASTNode(NodeType::WAIT), duration(std::move(d)) {}
     void accept(ASTVisitor& v) override;
 };
 
 class ReturnNode : public ASTNode {
 public:
     NodePtr value; // may be null for bare return
-    explicit ReturnNode(NodePtr v) : value(std::move(v)) {}
+    explicit ReturnNode(NodePtr v) : ASTNode(NodeType::RETURN), value(std::move(v)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -210,7 +227,7 @@ public:
     NodePtr thenBlock;
     NodePtr elseBlock; // may be null
     IfNode(NodePtr c, NodePtr t, NodePtr e)
-        : condition(std::move(c)), thenBlock(std::move(t)), elseBlock(std::move(e)) {}
+        : ASTNode(NodeType::IF), condition(std::move(c)), thenBlock(std::move(t)), elseBlock(std::move(e)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -219,7 +236,7 @@ public:
     NodePtr count;
     NodePtr body;
     RepeatNode(NodePtr c, NodePtr b)
-        : count(std::move(c)), body(std::move(b)) {}
+        : ASTNode(NodeType::REPEAT), count(std::move(c)), body(std::move(b)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -227,8 +244,14 @@ class WhileNode : public ASTNode {
 public:
     NodePtr condition;
     NodePtr body;
+    // Fast-path metadata
+    bool isSimpleNumericLoop = false;
+    std::string counterVar;
+    long long limit = 0;
+    std::string op;
+
     WhileNode(NodePtr c, NodePtr b)
-        : condition(std::move(c)), body(std::move(b)) {}
+        : ASTNode(NodeType::WHILE), condition(std::move(c)), body(std::move(b)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -239,7 +262,7 @@ public:
     std::vector<std::string> params;
     NodePtr                  body;
     FuncDeclNode(std::string n, std::vector<std::string> p, NodePtr b)
-        : name(std::move(n)), params(std::move(p)), body(std::move(b)) {}
+        : ASTNode(NodeType::FUNC_DECL), name(std::move(n)), params(std::move(p)), body(std::move(b)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -248,7 +271,7 @@ public:
     std::string name;
     NodeList    args;
     FuncCallNode(std::string n, NodeList a)
-        : name(std::move(n)), args(std::move(a)) {}
+        : ASTNode(NodeType::FUNC_CALL), name(std::move(n)), args(std::move(a)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -259,7 +282,7 @@ public:
     std::string errorVar;
     NodePtr     catchBlock;
     TryCatchNode(NodePtr t, std::string e, NodePtr c)
-        : tryBlock(std::move(t)), errorVar(std::move(e)), catchBlock(std::move(c)) {}
+        : ASTNode(NodeType::TRY_CATCH), tryBlock(std::move(t)), errorVar(std::move(e)), catchBlock(std::move(c)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -312,7 +335,7 @@ class MouseMoveNode : public ASTNode {
 public:
     NodePtr pointExpr; // Evaluates to any 2-element iterable (Tuple or List)
 
-    explicit MouseMoveNode(NodePtr pt) : pointExpr(std::move(pt)) {}
+    explicit MouseMoveNode(NodePtr pt) : ASTNode(NodeType::MOUSE_MOVE), pointExpr(std::move(pt)) {}
     void accept(ASTVisitor& v) override;
 };
 
@@ -322,33 +345,34 @@ public:
     NodePtr pointExpr; // Optional
 
     explicit MouseClickNode(MouseButton btn, NodePtr pt = nullptr)
-        : button(btn), pointExpr(std::move(pt)) {}
+        : ASTNode(NodeType::MOUSE_CLICK), button(btn), pointExpr(std::move(pt)) {}
     void accept(ASTVisitor& v) override;
 };
 
 class KeyPressNode : public ASTNode {
 public:
     std::string key;
-    explicit KeyPressNode(std::string k) : key(std::move(k)) {}
+    explicit KeyPressNode(std::string k) : ASTNode(NodeType::KEY_PRESS), key(std::move(k)) {}
     void accept(ASTVisitor& v) override;
 };
 
 class KeyTypeNode : public ASTNode {
 public:
     NodePtr textExpr; // Evaluates to string
-    explicit KeyTypeNode(NodePtr t) : textExpr(std::move(t)) {}
+    explicit KeyTypeNode(NodePtr t) : ASTNode(NodeType::KEY_TYPE), textExpr(std::move(t)) {}
     void accept(ASTVisitor& v) override;
 };
 
 class AppOpenNode : public ASTNode {
 public:
     NodePtr nameExpr;
-    explicit AppOpenNode(NodePtr n) : nameExpr(std::move(n)) {}
+    explicit AppOpenNode(NodePtr n) : ASTNode(NodeType::APP_OPEN), nameExpr(std::move(n)) {}
     void accept(ASTVisitor& v) override;
 };
 
 class AppListNode : public ASTNode {
 public:
+    AppListNode() : ASTNode(NodeType::APP_LIST) {}
     void accept(ASTVisitor& v) override;
 };
 

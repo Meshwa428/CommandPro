@@ -1,0 +1,161 @@
+# Synapse Stress Test Script
+
+fn fib(n) {
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+# 1. Arithmetic & Loop Stress
+println "--- 1. Arithmetic & Loop Stress (100,000 iterations) ---";
+let start = now();
+let i = 0;
+let sum = 0;
+loop while (i < 100000) {
+    sum = sum + i;
+    i = i + 1;
+}
+let end = now();
+println "Time: " + (end - start) + "ms";
+println "Result: " + sum;
+
+# 2. Function Call & Recursion Stress
+println "--- 2. Function Call & Recursion Stress (Fibonacci 20) ---";
+start = now();
+let f20 = fib(20);
+end = now();
+println "Time: " + (end - start) + "ms";
+println "Result: " + f20;
+
+# 3. String Concatenation Stress
+println "--- 3. String Concatenation Stress (5,000 ops) ---";
+start = now();
+let s = "";
+let j = 0;
+loop while (j < 5000) {
+    s = s + "a";
+    j = j + 1;
+}
+end = now();
+println "Time: " + (end - start) + "ms";
+println "Result Length: " + size(s);
+
+# 4. Typed Variable Coercion Stress
+println "--- 4. Typed Variable Coercion Stress (50,000 assignments) ---";
+start = now();
+int x = 0;
+let k = 0;
+loop while (k < 50000) {
+    x = 10.5; # Coercion happens here
+    k = k + 1;
+}
+end = now();
+println "Time: " + (end - start) + "ms";
+
+# 5. Tuple Creation Stress
+println "--- 5. Tuple Creation Stress (5,000 creations) ---";
+start = now();
+let l = 0;
+loop while (l < 5000) {
+    let t = (l, l + 1, l + 2);
+    l = l + 1;
+}
+end = now();
+println "Time: " + (end - start) + "ms";
+# Synapse Extended Stress Test Script
+
+# 6. Deeply Nested Scopes Stress
+println "--- 6. Deeply Nested Scopes (1,000 nested blocks) ---";
+let start = now();
+fn nested_scopes(depth) {
+    if (depth > 0) {
+        let x = depth;
+        return nested_scopes(depth - 1);
+    }
+    return 0;
+}
+nested_scopes(1000);
+let end = now();
+println "Time: " + (end - start) + "ms";
+
+# 7. High-Frequency Function Calls Stress
+println "--- 7. High-Frequency Function Calls (100,000 calls) ---";
+fn add_one(n) {
+    return n + 1;
+}
+start = now();
+let total = 0;
+let counter = 0;
+loop while (counter < 100000) {
+    total = add_one(total);
+    counter = counter + 1;
+}
+end = now();
+println "Time: " + (end - start) + "ms";
+println "Result: " + total;
+
+# 8. Large List Literal Stress
+println "--- 8. Large List Literal Creation (500 elements) ---";
+start = now();
+let large_list = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
+];
+end = now();
+println "Time: " + (end - start) + "ms";
+println "List Size: " + size(large_list);
+
+# 9. Complex Expression Stress
+println "--- 9. Complex Expression (Nested arithmetic, 100,000 iterations) ---";
+start = now();
+let m = 0;
+loop while (m < 100000) {
+    let res = (1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10) * (11 - 1) / 2 + (m % 100) - (m // 10);
+    m = m + 1;
+}
+end = now();
+println "Time: " + (end - start) + "ms";
+
+# 10. Deep Recursion Stress (Fibonacci 25)
+println "--- 10. Deep Recursion (Fibonacci 25) ---";
+start = now();
+let f25 = fib(25);
+end = now();
+println "Time: " + (end - start) + "ms";
+println "Result: " + f25;
+
+# 11. Large List Iteration Stress (10,000 accesses)
+println "--- 11. Large List Iteration (10,000 accesses) ---";
+let lst = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+start = now();
+let idx = 0;
+let total_list = 0;
+loop while (idx < 10000) {
+    total_list = total_list + lst[idx % 10];
+    idx = idx + 1;
+}
+end = now();
+println "Time: " + (end - start) + "ms";
+println "Result: " + total_list;

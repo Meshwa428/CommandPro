@@ -74,6 +74,18 @@ struct SynapseMap {
 };
 
 // ── Helper converters ──────────────────────────────────────────────────────
+enum class DataType {
+    NONE,
+    INT,
+    FLOAT,
+    STR,
+    BOOL,
+    TUPLE,
+    LIST,
+    MAP,
+    TIME
+};
+
 std::string valueToString(const SynapseValue& v);
 bool        valueToBool(const SynapseValue& v);
 double      valueToDouble(const SynapseValue& v);
@@ -88,36 +100,100 @@ struct ReturnSignal {
     SynapseValue value;
 };
 
-// ── Scope-chained variable environment ────────────────────────────────────
-class Environment {
-public:
-    explicit Environment(std::shared_ptr<Environment> parent = nullptr)
-        : parent(std::move(parent)) {}
-
-    void set(const std::string& name, SynapseValue val) {
-        vars[name] = std::move(val);
-    }
-    void setTyped(const std::string& name, SynapseValue val, const std::string& typeName) {
-        vars[name] = std::move(val);
-        types[name] = typeName;
-    }
-    void assign(const std::string& name, SynapseValue val);
-    SynapseValue get(const std::string& name) const;
-    bool         has(const std::string& name) const;
-    std::string  getTypeConstraint(const std::string& name) const;
-
-private:
-    std::unordered_map<std::string, SynapseValue> vars;
-    std::unordered_map<std::string, std::string>  types;
-    std::shared_ptr<Environment>                  parent;
-};
-
 // ── Runtime error ─────────────────────────────────────────────────────────
 class RuntimeError : public std::runtime_error {
 public:
     int line = 0, column = 0;
     RuntimeError(const std::string& msg, int ln = 0, int col = 0)
         : std::runtime_error(msg), line(ln), column(col) {}
+};
+
+// ── Scope-chained variable environment ────────────────────────────────────
+class Environment {
+public:
+    explicit Environment(std::shared_ptr<Environment> parent = nullptr)
+        : parent(std::move(parent)) {}
+
+    struct VarRecord {
+        SynapseValue value;
+        DataType     type = DataType::NONE;
+    };
+
+    void clear() {
+        vars.clear();
+        parent = nullptr;
+    }
+
+    void reset(std::shared_ptr<Environment> newParent, size_t sizeHint = 0) {
+        vars.clear();
+        parent = std::move(newParent);
+        if (sizeHint > 0) vars.reserve(sizeHint);
+    }
+
+    void set(const std::string& name, SynapseValue val) {
+        vars[name] = {std::move(val), DataType::NONE};
+    }
+    
+    void setTyped(const std::string& name, SynapseValue val, DataType dt) {
+        vars[name] = {std::move(val), dt};
+    }
+
+    void assign(const std::string& name, SynapseValue val) {
+        auto it = vars.find(name);
+        if (it != vars.end()) {
+            // Optimization: if both are INT, just update the value
+            if (it->second.type == DataType::INT && val.index() == 0) {
+                it->second.value = std::move(val);
+                return;
+            }
+            // For now, overwrite since we check types at declaration
+            it->second.value = std::move(val);
+            return;
+        }
+        if (parent) parent->assign(name, std::move(val));
+    }
+
+    SynapseValue get(const std::string& name, int ln = 0, int col = 0) const {
+        auto it = vars.find(name);
+        if (it != vars.end()) return it->second.value;
+        if (parent) return parent->get(name, ln, col);
+        throw RuntimeError("Undefined variable: '" + name + "'", ln, col);
+    }
+
+    bool has(const std::string& name) const {
+        if (vars.count(name)) return true;
+        return parent ? parent->has(name) : false;
+    }
+
+    std::string getTypeConstraint(const std::string& name) const {
+        auto it = vars.find(name);
+        if (it != vars.end()) {
+            switch (it->second.type) {
+                case DataType::INT:   return "int";
+                case DataType::FLOAT: return "float";
+                case DataType::STR:   return "str";
+                case DataType::BOOL:  return "bool";
+                case DataType::TUPLE: return "tuple";
+                case DataType::LIST:  return "list";
+                case DataType::MAP:   return "map";
+                case DataType::TIME:  return "time";
+                default:              return "";
+            }
+        }
+        if (parent) return parent->getTypeConstraint(name);
+        return "";
+    }
+
+    VarRecord* getRecord(const std::string& name) {
+        auto it = vars.find(name);
+        if (it != vars.end()) return &it->second;
+        if (parent) return parent->getRecord(name);
+        return nullptr;
+    }
+
+private:
+    std::unordered_map<std::string, VarRecord> vars;
+    std::shared_ptr<Environment>               parent;
 };
 
 // ── Function record ────────────────────────────────────────────────────────
@@ -176,8 +252,14 @@ public:
     void visit(IndexAccessNode&)     override;
 
 private:
-    SynapseValue eval(ASTNode& node);
-    void         exec(ASTNode& node);
+    SynapseValue eval(ASTNode& node) {
+        node.accept(*this);
+        return lastValue;
+    }
+    void exec(ASTNode& node) {
+        if (isReturning) return;
+        node.accept(*this);
+    }
     void         execBlock(BlockNode& block, std::shared_ptr<Environment> env);
     SynapseValue applyBinaryOp(const std::string& op,
                                const SynapseValue& l,
@@ -193,6 +275,15 @@ private:
     std::unordered_map<std::string, SynapseFunction>      functions;
     std::shared_ptr<IPlatform>                            platform;
     std::unordered_map<std::string, BuiltinFunc>          builtins;
+
+    // Return control
+    bool                                                  isReturning = false;
+    SynapseValue                                          returnValue = SynapseNull{};
+
+    // Environment pooling
+    std::vector<std::shared_ptr<Environment>>             envPool;
+    std::shared_ptr<Environment>                          acquireEnv(std::shared_ptr<Environment> parent, size_t sizeHint = 0);
+    void                                                  releaseEnv(std::shared_ptr<Environment> env);
 
     void registerBuiltins();
 };

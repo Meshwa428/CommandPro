@@ -68,23 +68,25 @@ The initial skeleton of the C++ Lexer, Parser, and Interpreter has been created.
 
 ---
 
-## v0.5.0 — Scheduling & Intervals
+## v0.5.0 — Async & Event Loop Architecture
 
-**Goal:** Allow time-based and recurring automation.
+**Goal:** Transition from synchronous execution to an event-driven runtime suitable for complex automation.
 
 **Planned Features:**
-- [ ] `RUN AT "HH:MM AM/PM" { ... }` 
-- [ ] `INTERVAL <duration> { ... }` recurring block
-- [ ] Signal handling for graceful script termination (`Ctrl+C`)
+- [ ] **Core Event Loop**: Implementation of the primary polling/dispatch loop for system events.
+- [ ] **Async / Await Infrastructure**: Language-level support for non-blocking operations (`WAIT UNTIL`, `ASYNC FN`).
+- [ ] **Timer & Job Scheduler**: Refactor intervals and scheduled tasks to run atop the event loop.
+- [ ] **Event Hooks**: Syntax and runtime support for system-level triggers (e.g., `ON WINDOW OPEN`).
 
 ---
 
 ## v0.6.0 — Error Handling & Robustness
 
-**Goal:** Make scripts resilient to unexpected conditions.
+**Goal:** Make scripts resilient to unexpected conditions and formalize the language structure.
 
 **Planned Features:**
 - [x] `try { ... } catch (err) { ... }` blocks
+- [ ] **Formal Grammar Specification**: Publish an EBNF grammar to eliminate parsing ambiguity and prevent syntax entropy.
 - [ ] Semantic Analyzer (Phase 3) — full variable scope and type checking
 - [x] User-friendly error messages with source context (underline the bad token)
 - [ ] `--dry-run` CLI flag (validate without execution)
@@ -105,6 +107,35 @@ The initial skeleton of the C++ Lexer, Parser, and Interpreter has been created.
 
 ---
 
+## v0.8.0 — Performance & VM Engineering
+
+**Goal:** Transition from a naive tree-walking interpreter to a high-performance Bytecode VM.
+
+**Planned Features:**
+- [ ] **Variable Slot Compilation**: Replace string-based `unordered_map` lookups in the execution loop with zero-cost index-based slots.
+- [ ] **Flattened Scope Frames**: Replace recursive `Environment` pointers with a flat stack of activation records (frames) to eliminate deep scope chain traversal.
+- [ ] **Bytecode Compiler**: Implement a compilation pass that transforms the AST into a linear stream of opcodes.
+- [ ] **Stack-based Virtual Machine**: Replace `ASTVisitor::visit` recursion with a high-speed dispatch loop (Computed Gotos / Opcode Switching).
+- [ ] **Memory Management Strategy**: Implement a dedicated Garbage Collection (GC) or an optimized Arena + Reference Counting hybrid to handle closures and async tasks safely.
+- [ ] **Optimized Value System**: Investigate Tagged Unions or NaN-boxing to reduce `std::variant` and `std::shared_ptr` overhead.
+- [ ] **Constant Folding & Interning**: Pre-calculate static expressions and intern all strings to minimize runtime allocations.
+- [ ] **Closure & Upvalue Support**: Implement proper lexical closures for callbacks and async tasks.
+
+---
+
+## v0.9.0 — Ecosystem & Extensibility
+
+**Goal:** Enable modularity and ensure secure execution through a formal plugin and sandbox architecture.
+
+**Planned Features:**
+- [ ] **Sandboxing & Permission Model**: Implement a capabilities-based security model to restrict script access to sensitive OS APIs (e.g., `PERMISSION_INPUT`, `PERMISSION_SCREEN_CAPTURE`).
+- [ ] **C-Plugin ABI**: Formal interface for loading external shared libraries (.so / .dll) as Synapse modules.
+- [ ] **Module System**: `import` syntax and namespace management to decouple automation logic from language core.
+- [ ] **Package Manager (synpkg)**: Initial tool for distributing and installing Synapse runtime modules.
+- [ ] **Standard Library Decoupling**: Move non-essential features (OCR, Browser, AI) into official, independently versioned modules.
+
+---
+
 ## v1.0.0 — Stable Release
 
 **Goal:** Stable, production-quality release with full documentation and test coverage.
@@ -118,54 +149,42 @@ The initial skeleton of the C++ Lexer, Parser, and Interpreter has been created.
 
 ---
 
-## v2.0.0 — Advanced UI Detection *(Future Vision)*
+## v2.0.0 — Semantic Automation *(Official Modules)*
 
-> This is the major advanced feature planned for Synapse beyond v1.0. It is **out of scope** for all current releases.
+> This is the major advanced feature planned for Synapse beyond v1.0. These features are implemented as **decoupled runtime modules**, not core language syntax.
 
-**Goal:** Enable scripts to find and interact with UI elements without hardcoded screen coordinates.
+**Goal:** Enable scripts to find and interact with UI elements using high-level semantic queries.
 
-This removes the biggest fragility in coordinate-based automation — if a window moves or the resolution changes, pixel-based scripts break.
+### Planned Official Modules
 
-### Planned Detection Approaches
-
-#### 2.1 Template Image Matching
-Synapse will be able to find a UI element on screen by matching it against a reference image:
+#### 2.1 `ai.vision` (Template & AI Matching)
+Find UI elements by image matching or semantic description:
 ```sql
-# Find a button on screen by image and click it
-let btnPos = SCREEN FIND "assets/submit_button.png";
+import ai.vision;
+
+# Find a button on screen by image
+let btnPos = vision.find_image("assets/submit.png");
 MOUSE CLICK LEFT AT btnPos;
+
+# AI-assisted semantic finding
+let loginForm = vision.find_element("the login form");
 ```
 
-Implementation: OpenCV template matching (`cv::matchTemplate`)
-
-#### 2.2 Accessibility Tree / OS UI APIs
-On supported platforms, query the operating system's accessibility APIs:
-- **Windows:** `UIAutomation` API
-- **Linux:** `AT-SPI2` accessibility framework
-
+#### 2.2 `ui.accessibility` (OS UI APIs)
+Query the operating system's accessibility tree:
 ```sql
+import ui.accessibility;
+
 # Click a button by its accessible name
-UI CLICK BUTTON "Submit";
-UI TYPE FIELD "Username" "john.doe";
-UI GET TEXT "status_label" INTO statusMsg;
+accessibility.click_button("Submit");
+accessibility.type_into("Username", "john.doe");
 ```
 
-#### 2.3 OCR-Based Text Detection *(v2.1)*
-Use OCR to find UI elements based on visible text:
+#### 2.3 `ui.ocr` (Text Detection)
+Use OCR to find elements based on visible text:
 ```sql
-let okBtn = SCREEN FIND TEXT "OK";
+import ui.ocr;
+
+let okBtn = ocr.find_text("OK");
 MOUSE CLICK LEFT AT okBtn;
 ```
-
-Implementation: Tesseract OCR integration.
-
-#### 2.4 AI-Assisted Detection *(v3.0 and beyond)*
-Integrate a lightweight on-device vision model to semantically understand screen content:
-```sql
-# Describe what to find in natural language
-let loginForm = AI FIND "the login form";
-AI FILL loginForm WITH "username" AS "john", "password" AS "secret";
-AI CLICK "the submit button";
-```
-
-This represents the long-term AI-native vision for Synapse — a tool that can understand and interact with any interface without manual coordinate mapping.

@@ -16,4 +16,4 @@ build
 .vscode
 app.log
 ast.json
-__pycache__
+__pycache__tests/performance_history.csv

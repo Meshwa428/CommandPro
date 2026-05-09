@@ -85,8 +85,8 @@ Existing automation tools have fundamental limitations:
              └─────────┬─────────┘
                        │
              ┌─────────▼─────────┐
-             │   INTERPRETER     │  Phase 4: Execution
-             │   AST → OS calls  │
+             │   INTERPRETER     │  Phase 4: Execution (Current: Tree-Walking)
+             │   AST → OS calls  │  Phase 4 (Future): Bytecode VM
              └─────────┬─────────┘
                        │
           ┌────────────▼────────────┐
@@ -120,10 +120,9 @@ Existing automation tools have fundamental limitations:
 - Resolves function signatures and argument types
 - Reports semantic errors (undeclared variables, type mismatches)
 
-### 5.4 Interpreter
-- Traverses the validated AST using the **Visitor Pattern**
-- Executes each node by delegating to the appropriate OS Abstraction Layer call
-- Maintains an execution `Environment` (variable scopes, call stack)
+### 5.4 Interpreter (Virtual Machine)
+- **Current (v0.x)**: Traverses the validated AST using the **Visitor Pattern**. Executes each node by delegating to the appropriate OS Abstraction Layer call. Maintains an execution `Environment` (variable scopes, call stack) using chained hashmaps.
+- **Future (v0.8+)**: A specialized **Bytecode Compiler** will transform the AST into a linear stream of opcodes. A high-performance **Stack-based VM** will then execute these opcodes, utilizing indexed variable slots instead of string lookups for maximum execution speed.
 
 ### 5.5 OS Abstraction Layer (OAL)
 - Provides a platform-neutral C++ interface for all OS interactions
@@ -133,7 +132,28 @@ Existing automation tools have fundamental limitations:
 
 ---
 
-## 6. Data Types & Collections
+## 6. Architectural Pillars
+
+To ensure long-term scalability and security, Synapse is built upon three foundational pillars:
+
+### 6.1 Memory Management (Hybrid Strategy)
+Synapse employs a hybrid approach to balance performance with ease of use:
+- **Small Values**: Primitive types (Int, Float, Bool) are stored inline within the stack or registers.
+- **Short-lived Objects**: An **Arena Allocator** is used for temporary AST nodes and intermediate runtime values to minimize heap fragmentation.
+- **Long-lived Collections**: A **Mark-and-Sweep Garbage Collector (GC)** or optimized **Intrusive Reference Counting** handles recursive collections (Lists, Maps, Tuples) and closures, ensuring safety in async/event-driven contexts.
+
+### 6.2 Security & Sandboxing (Capabilities Model)
+As an automation engine with hardware access, Synapse implements a strict security model:
+- **API-Level Capabilities**: OS interactions (Mouse, Keyboard, Screen) are restricted behind granular permissions.
+- **Sandboxed Execution**: External modules and untrusted scripts run in a restricted environment with no access to sensitive platform APIs unless explicitly granted via a manifest.
+- **Trusted Module ABI**: Only signed, verified official modules have direct access to the native runtime bridge.
+
+### 6.3 Async-Native Runtime
+Automation is fundamentally event-driven. The Synapse runtime is built around a non-blocking **Core Event Loop** that handles system triggers, timeouts, and concurrent automation tasks without blocking the main execution thread.
+
+---
+
+## 7. Data Types & Collections
 
 Synapse supports both primitive and recursive collection types:
 

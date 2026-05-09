@@ -58,11 +58,21 @@ std::unique_ptr<ProgramNode> Parser::parse() {
 // ──────────────────────────────────────────────────────────────────────────
 NodePtr Parser::parseBlock() {
     eat(TokenType::LBRACE);
-    auto block = std::make_unique<BlockNode>();
-    while (!check(TokenType::RBRACE) && !check(TokenType::END_OF_FILE))
-        block->statements.push_back(parseStatement());
+    auto node = std::make_unique<BlockNode>();
+    node->needsScope = false; // Assume no decls initially
+    while (!check(TokenType::RBRACE) && !check(TokenType::END_OF_FILE)) {
+        TokenType t = cur().type;
+        if (t == TokenType::LET || t == TokenType::FN || 
+            t == TokenType::INT_TYPE || t == TokenType::FLOAT_TYPE ||
+            t == TokenType::STR_TYPE || t == TokenType::BOOL_TYPE ||
+            t == TokenType::TUPLE_TYPE || t == TokenType::LIST_TYPE ||
+            t == TokenType::MAP_TYPE || t == TokenType::TIME_TYPE) {
+            node->needsScope = true;
+        }
+        node->statements.push_back(parseStatement());
+    }
     eat(TokenType::RBRACE);
-    return block;
+    return node;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -204,6 +214,21 @@ NodePtr Parser::parseWhile() {
     NodePtr body = parseBlock();
     auto node = std::make_unique<WhileNode>(std::move(cond), std::move(body));
     node->line = ln; node->column = col;
+
+    // Analyze for simple numeric loop optimization: loop while (i < N)
+    if (auto* bExpr = dynamic_cast<BinaryExprNode*>(node->condition.get())) {
+        if (auto* ident = dynamic_cast<IdentifierNode*>(bExpr->left.get())) {
+            if (auto* lit = dynamic_cast<IntLiteralNode*>(bExpr->right.get())) {
+                if (bExpr->op == "<") {
+                    node->isSimpleNumericLoop = true;
+                    node->counterVar = ident->name;
+                    node->limit = lit->value;
+                    node->op = bExpr->op;
+                }
+            }
+        }
+    }
+
     return node;
 }
 
