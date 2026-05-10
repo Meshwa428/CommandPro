@@ -21,7 +21,7 @@ public:
         }
         
         auto* obj = new ObjString(str);
-        obj->refCount = 1000000; // Immortal for now
+        obj->refCount = -1; // Immortal
         obj->isInterned = true;
         internStrings[str] = obj;
         return obj;

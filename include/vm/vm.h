@@ -46,6 +46,15 @@ private:
     std::unordered_map<std::string, SynapseValue>  builtins;
     std::shared_ptr<IPlatform> platform;
     
+    struct ConcatCacheEntry {
+        ObjString* a = nullptr;
+        ObjString* b = nullptr;
+        ObjString* res = nullptr;
+    };
+    static constexpr int CONCAT_CACHE_SIZE = 1024;
+    ConcatCacheEntry concatCache[CONCAT_CACHE_SIZE];
+    void clearConcatCache();
+
     // Profiling
 #ifdef SYNAPSE_PROFILER
     long long opcodeCounts[256];

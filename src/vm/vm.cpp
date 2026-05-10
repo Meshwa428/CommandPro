@@ -1,10 +1,12 @@
 #include "vm/vm.h"
 #include "vm/opcode.h"
+#include "vm/intern.h"
 #include <iostream>
 #include <thread>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 namespace Synapse {
 
@@ -29,6 +31,16 @@ VM::~VM() {
     }
     for (auto& g : globals) decref(g);
     for (auto& pair : builtins) decref(pair.second);
+    clearConcatCache();
+}
+
+void VM::clearConcatCache() {
+    for (int i = 0; i < CONCAT_CACHE_SIZE; ++i) {
+        if (concatCache[i].a) decref(concatCache[i].a);
+        if (concatCache[i].b) decref(concatCache[i].b);
+        if (concatCache[i].res) decref(concatCache[i].res);
+        concatCache[i] = {nullptr, nullptr, nullptr};
+    }
 }
 
 void VM::registerBuiltins() {
@@ -51,7 +63,7 @@ void VM::registerBuiltins() {
             if (v.as.obj->type == ObjType::TUPLE) return (long long)static_cast<ObjTuple*>(v.as.obj)->elements.size();
             if (v.as.obj->type == ObjType::LIST) return (long long)static_cast<ObjList*>(v.as.obj)->elements.size();
             if (v.as.obj->type == ObjType::MAP) return (long long)static_cast<ObjMap*>(v.as.obj)->items.size();
-            if (v.as.obj->type == ObjType::STR) return (long long)static_cast<ObjString*>(v.as.obj)->chars.size();
+            if (v.as.obj->type == ObjType::STR) return (long long)static_cast<ObjString*>(v.as.obj)->length;
         }
         return 0LL;
     });
@@ -82,6 +94,21 @@ void VM::registerBuiltins() {
             throw std::runtime_error(args.size() > 1 ? valueToString(args[1]) : "Assertion failed");
         }
         return true;
+    });
+
+    addBuiltin("string_telemetry", [](const std::vector<SynapseValue>&) -> SynapseValue {
+        SynapseValue res = makeMap();
+        auto* m = static_cast<ObjMap*>(res.as.obj);
+#ifdef SYNAPSE_PROFILER
+        auto& t = getStringTelemetry();
+        m->items["total_allocations"] = (long long)t.totalAllocations.load();
+        m->items["sso_allocations"] = (long long)t.ssoAllocations.load();
+        m->items["heap_allocations"] = (long long)t.heapAllocations.load();
+        m->items["total_length"] = (long long)t.totalLength.load();
+#else
+        m->items["profiling"] = false;
+#endif
+        return res;
     });
 }
 
@@ -149,7 +176,7 @@ InterpretResult VM::run() {
         goto *dispatch_table[*currentFrame->ip++]
     #define CASE(op) L_##op:
     static void* dispatch_table[] = {
-        &&L_OP_CONSTANT, &&L_OP_CONSTANT_16, &&L_OP_NULL, &&L_OP_TRUE, &&L_OP_FALSE,
+        &&L_OP_CONSTANT, &&L_OP_CONSTANT_8, &&L_OP_CONSTANT_16, &&L_OP_NULL, &&L_OP_TRUE, &&L_OP_FALSE,
         &&L_OP_POP, &&L_OP_DUP, &&L_OP_GET_LOCAL, &&L_OP_SET_LOCAL, &&L_OP_GET_GLOBAL, &&L_OP_SET_GLOBAL,
         &&L_OP_DEFINE_GLOBAL, &&L_OP_EQUAL, &&L_OP_STRICT_EQUAL, &&L_OP_GREATER, &&L_OP_LESS,
         &&L_OP_ADD, &&L_OP_SUBTRACT, &&L_OP_MULTIPLY, &&L_OP_DIVIDE, &&L_OP_MODULO,
@@ -158,10 +185,8 @@ InterpretResult VM::run() {
         &&L_OP_CALL, &&L_OP_RETURN, &&L_OP_TUPLE, &&L_OP_LIST, &&L_OP_MAP, &&L_OP_INDEX_GET, &&L_OP_INDEX_SET,
         &&L_OP_MOUSE_MOVE, &&L_OP_MOUSE_CLICK, &&L_OP_KEY_PRESS, &&L_OP_KEY_TYPE,
         &&L_OP_WAIT, &&L_OP_ASK,
-        &&L_OP_ADD_INT, &&L_OP_SUB_INT, &&L_OP_MUL_INT, &&L_OP_DIV_INT,
-        &&L_OP_GET_LOCAL_0, &&L_OP_GET_LOCAL_1, &&L_OP_GET_LOCAL_2, &&L_OP_GET_LOCAL_3,
-        &&L_OP_GET_LOCAL_4, &&L_OP_GET_LOCAL_5, &&L_OP_GET_LOCAL_6, &&L_OP_GET_LOCAL_7,
-        &&L_OP_GET_LOCAL_8
+        &&L_OP_STRING_ADD,
+        &&L_OP_STRING_EQUAL
     };
     INTERPRETER_LOOP();
 #endif
@@ -172,11 +197,13 @@ InterpretResult VM::run() {
                 pushV(currentFrame->chunk->constants[index]);
                 DISPATCH();
             }
-            CASE(OP_CONSTANT_16) {
-                index = (uint16_t)(*currentFrame->ip++ << 8);
-                index |= *currentFrame->ip++;
+            CASE(OP_CONSTANT_8) {
+                index = *currentFrame->ip++;
                 pushV(currentFrame->chunk->constants[index]);
                 DISPATCH();
+            }
+            CASE(OP_CONSTANT_16) {
+                goto L_OP_CONSTANT;
             }
             CASE(OP_NULL)      pushV(SynapseValue()); DISPATCH();
             CASE(OP_TRUE)      pushV(true); DISPATCH();
@@ -236,144 +263,243 @@ InterpretResult VM::run() {
             }
 
             CASE(OP_ADD) {
-                SynapseValue& vB = stackTop[-1];
-                SynapseValue& vA = stackTop[-2];
-                if (vA.type == ValueType::VAL_INT && vB.type == ValueType::VAL_INT) {
-                    // Quicken!
-                    currentFrame->ip[-1] = OP_ADD_INT;
-                    vA.as.i += vB.as.i;
+                SynapseValue valB = stackTop[-1];
+                SynapseValue valA = stackTop[-2];
+
+                if (valA.type == ValueType::VAL_INT && valB.type == ValueType::VAL_INT) {
+                    stackTop[-2] = SynapseValue(valA.as.i + valB.as.i);
                     stackTop--;
-                } else if (vA.type == ValueType::VAL_OBJ && vA.as.obj->type == ObjType::STR) {
-                    resVal = makeString(valueToString(vA) + valueToString(vB));
-                    decref(vA); decref(vB);
-                    stackTop[-2] = resVal;
+                } else if (valA.type == ValueType::VAL_OBJ && valA.as.obj->type == ObjType::STR &&
+                           valB.type == ValueType::VAL_OBJ && valB.as.obj->type == ObjType::STR) {
+                    auto* sA = static_cast<ObjString*>(valA.as.obj);
+                    auto* sB = static_cast<ObjString*>(valB.as.obj);
+
+                    size_t h = (reinterpret_cast<size_t>(sA)) ^ (reinterpret_cast<size_t>(sB) << 1);
+                    int idx = static_cast<int>(h % CONCAT_CACHE_SIZE);
+                    auto& entry = concatCache[idx];
+
+                    if (entry.a == sA && entry.b == sB) {
+                        ObjString* resObj = entry.res;
+                        incref(resObj);
+                        stackTop[-2] = SynapseValue(resObj);
+                        stackTop--;
+                        decref(valA); decref(valB);
+                        DISPATCH();
+                    }
+
+                    if (sA->refCount == 1 && !sA->isInterned) {
+                        sA->append(sB->c_str(), sB->length);
+                        stackTop[-2] = valA;
+                        stackTop--;
+                        decref(valB);
+                        DISPATCH();
+                    }
+                    
+                    size_t newLen = sA->length + sB->length;
+                    char* buf = new char[newLen + 1];
+                    std::memcpy(buf, sA->c_str(), sA->length);
+                    std::memcpy(buf + sA->length, sB->c_str(), sB->length);
+                    buf[newLen] = '\0';
+                    SynapseValue res = takeString(buf, newLen);
+                    ObjString* resStr = static_cast<ObjString*>(res.as.obj);
+
+                    if (entry.a) decref(entry.a);
+                    if (entry.b) decref(entry.b);
+                    if (entry.res) decref(entry.res);
+
+                    entry.a = sA; incref(sA);
+                    entry.b = sB; incref(sB);
+                    entry.res = resStr; incref(resStr);
+
+                    stackTop[-2] = res;
                     stackTop--;
-                } else if (vB.type == ValueType::VAL_OBJ && vB.as.obj->type == ObjType::STR) {
-                    resVal = makeString(valueToString(vA) + valueToString(vB));
-                    decref(vA); decref(vB);
-                    stackTop[-2] = resVal;
+                    decref(valA); decref(valB);
+                } else if (valA.type == ValueType::VAL_OBJ && valA.as.obj->type == ObjType::STR) {
+                    auto* sA = static_cast<ObjString*>(valA.as.obj);
+                    std::string rhs = valueToString(valB);
+                    size_t newLen = sA->length + rhs.size();
+                    char* buf = new char[newLen + 1];
+                    std::memcpy(buf, sA->c_str(), sA->length);
+                    std::memcpy(buf + sA->length, rhs.data(), rhs.size());
+                    buf[newLen] = '\0';
+                    SynapseValue res = takeString(buf, newLen);
+                    stackTop[-2] = res;
                     stackTop--;
+                    decref(valA); decref(valB);
+                } else if (valB.type == ValueType::VAL_OBJ && valB.as.obj->type == ObjType::STR) {
+                    auto* sB = static_cast<ObjString*>(valB.as.obj);
+                    std::string lhs = valueToString(valA);
+                    size_t newLen = lhs.size() + sB->length;
+                    char* buf = new char[newLen + 1];
+                    std::memcpy(buf, lhs.data(), lhs.size());
+                    std::memcpy(buf + lhs.size(), sB->c_str(), sB->length);
+                    buf[newLen] = '\0';
+                    SynapseValue res = takeString(buf, newLen);
+                    stackTop[-2] = res;
+                    stackTop--;
+                    decref(valA); decref(valB);
                 } else {
-                    double da = valueToDouble(vA);
-                    double db = valueToDouble(vB);
-                    decref(vA); decref(vB);
+                    double da = valueToDouble(valA);
+                    double db = valueToDouble(valB);
                     stackTop[-2] = SynapseValue(da + db);
                     stackTop--;
+                    decref(valA); decref(valB);
                 }
                 DISPATCH();
             }
+
             CASE(OP_SUBTRACT) {
-                SynapseValue& vB = stackTop[-1];
-                SynapseValue& vA = stackTop[-2];
-                if (vA.type == ValueType::VAL_INT && vB.type == ValueType::VAL_INT) {
-                    currentFrame->ip[-1] = OP_SUB_INT;
-                    vA.as.i -= vB.as.i;
-                    stackTop--;
+                SynapseValue valB = popV();
+                SynapseValue valA = popV();
+                if (valA.type == ValueType::VAL_INT && valB.type == ValueType::VAL_INT) {
+                    pushV(SynapseValue(valA.as.i - valB.as.i));
                 } else {
-                    double da = valueToDouble(vA);
-                    double db = valueToDouble(vB);
-                    decref(vA); decref(vB);
-                    stackTop[-2] = SynapseValue(da - db);
-                    stackTop--;
+                    pushV(SynapseValue(valueToDouble(valA) - valueToDouble(valB)));
                 }
+                decref(valA); decref(valB);
                 DISPATCH();
             }
             CASE(OP_MULTIPLY) {
-                SynapseValue& vB = stackTop[-1];
-                SynapseValue& vA = stackTop[-2];
-                if (vA.type == ValueType::VAL_INT && vB.type == ValueType::VAL_INT) {
-                    currentFrame->ip[-1] = OP_MUL_INT;
-                    vA.as.i *= vB.as.i;
-                    stackTop--;
+                SynapseValue valB = popV();
+                SynapseValue valA = popV();
+                if (valA.type == ValueType::VAL_INT && valB.type == ValueType::VAL_INT) {
+                    pushV(SynapseValue(valA.as.i * valB.as.i));
                 } else {
-                    double da = valueToDouble(vA);
-                    double db = valueToDouble(vB);
-                    decref(vA); decref(vB);
-                    stackTop[-2] = SynapseValue(da * db);
-                    stackTop--;
+                    pushV(SynapseValue(valueToDouble(valA) * valueToDouble(valB)));
                 }
+                decref(valA); decref(valB);
                 DISPATCH();
             }
+
+            CASE(OP_EQUAL) {
+                SynapseValue valB = popV();
+                SynapseValue valA = popV();
+                bool result;
+                if (valA.type != valB.type) {
+                    if (valA.type == ValueType::VAL_INT && valB.type == ValueType::VAL_FLOAT) result = ((double)valA.as.i == valB.as.f);
+                    else if (valA.type == ValueType::VAL_FLOAT && valB.type == ValueType::VAL_INT) result = (valA.as.f == (double)valB.as.i);
+                    else result = false;
+                } else if (valA.type == ValueType::VAL_OBJ) {
+                    Obj* ao = valA.as.obj;
+                    Obj* bo = valB.as.obj;
+                    if (ao == bo) result = true;
+                    else if (!ao || !bo || ao->type != bo->type) result = false;
+                    else if (ao->type == ObjType::STR) result = static_cast<ObjString*>(ao)->stringEquals(static_cast<ObjString*>(bo));
+                    else result = valuesAreEqual(valA, valB);
+                } else {
+                    result = (valA == valB);
+                }
+                pushV(SynapseValue(result));
+                decref(valA); decref(valB);
+                DISPATCH();
+            }
+
+            CASE(OP_STRING_ADD) {
+                SynapseValue vB = popV();
+                SynapseValue vA = popV();
+                auto* sA = static_cast<ObjString*>(vA.as.obj);
+                auto* sB = static_cast<ObjString*>(vB.as.obj);
+                size_t newLen = sA->length + sB->length;
+                char* buf = new char[newLen + 1];
+                std::memcpy(buf, sA->c_str(), sA->length);
+                std::memcpy(buf + sA->length, sB->c_str(), sB->length);
+                buf[newLen] = '\0';
+                SynapseValue res = takeString(buf, newLen);
+                pushV(res);
+                decref(res);
+                decref(vA); decref(vB);
+                DISPATCH();
+            }
+
+            CASE(OP_STRING_EQUAL) {
+                SynapseValue vB = popV();
+                SynapseValue vA = popV();
+                bool res = static_cast<ObjString*>(vA.as.obj)->stringEquals(static_cast<ObjString*>(vB.as.obj));
+                pushV(SynapseValue(res));
+                decref(vA); decref(vB);
+                DISPATCH();
+            }
+
             CASE(OP_DIVIDE) {
-                b = popV(); a = popV();
-                if (valueToDouble(b) == 0.0) {
+                SynapseValue valB = popV();
+                SynapseValue valA = popV();
+                if (valueToDouble(valB) == 0.0) {
                     RUNTIME_ERROR("Division by zero");
                 }
-                pushV(valueToDouble(a) / valueToDouble(b));
-                decref(a); decref(b);
+                pushV(valueToDouble(valA) / valueToDouble(valB));
+                decref(valA); decref(valB);
                 DISPATCH();
             }
             CASE(OP_INT_DIVIDE) {
-                b = popV(); a = popV();
-                long long den = valueToInt(b);
+                SynapseValue valB = popV();
+                SynapseValue valA = popV();
+                long long den = valueToInt(valB);
                 if (den == 0) {
                     RUNTIME_ERROR("Division by zero");
                 }
-                pushV(valueToInt(a) / den);
-                decref(a); decref(b);
+                pushV(valueToInt(valA) / den);
+                decref(valA); decref(valB);
                 DISPATCH();
             }
             CASE(OP_MODULO) {
-                b = popV(); a = popV();
-                long long den = valueToInt(b);
+                SynapseValue valB = popV();
+                SynapseValue valA = popV();
+                long long den = valueToInt(valB);
                 if (den == 0) {
                     RUNTIME_ERROR("Division by zero");
                 }
-                pushV(valueToInt(a) % den);
-                decref(a); decref(b);
+                pushV(valueToInt(valA) % den);
+                decref(valA); decref(valB);
                 DISPATCH();
             }
             CASE(OP_EXPONENT) {
-                b = popV(); a = popV();
-                pushV(std::pow(valueToDouble(a), valueToDouble(b)));
-                decref(a); decref(b);
+                SynapseValue valB = popV();
+                SynapseValue valA = popV();
+                pushV(std::pow(valueToDouble(valA), valueToDouble(valB)));
+                decref(valA); decref(valB);
                 DISPATCH();
             }
             CASE(OP_AND) {
-                b = popV(); a = popV();
-                pushV(valueToBool(a) && valueToBool(b));
-                decref(a); decref(b);
+                SynapseValue valB = popV();
+                SynapseValue valA = popV();
+                pushV(valueToBool(valA) && valueToBool(valB));
+                decref(valA); decref(valB);
                 DISPATCH();
             }
             CASE(OP_OR) {
-                b = popV(); a = popV();
-                pushV(valueToBool(a) || valueToBool(b));
-                decref(a); decref(b);
+                SynapseValue valB = popV();
+                SynapseValue valA = popV();
+                pushV(valueToBool(valA) || valueToBool(valB));
+                decref(valA); decref(valB);
                 DISPATCH();
             }
-            CASE(OP_EQUAL) {
-                b = popV(); a = popV();
-                pushV(valuesAreEqual(a, b));
-                decref(a); decref(b);
-                DISPATCH();
-            }
+
             CASE(OP_STRICT_EQUAL) {
-                b = popV(); a = popV();
-                if (a.type != b.type) pushV(false);
-                else pushV(valuesAreEqual(a, b));
-                decref(a); decref(b);
+                SynapseValue valB = popV();
+                SynapseValue valA = popV();
+                if (valA.type != valB.type) pushV(false);
+                else pushV(valuesAreEqual(valA, valB));
+                decref(valA); decref(valB);
                 DISPATCH();
             }
             CASE(OP_GREATER) {
-                SynapseValue& vB = stackTop[-1];
-                SynapseValue& vA = stackTop[-2];
+                SynapseValue valB = popV();
+                SynapseValue valA = popV();
                 bool res;
-                if (vA.type == ValueType::VAL_INT && vB.type == ValueType::VAL_INT) res = vA.as.i > vB.as.i;
-                else res = valueToDouble(vA) > valueToDouble(vB);
-                decref(vA); decref(vB);
-                stackTop[-2] = SynapseValue(res);
-                stackTop--;
+                if (valA.type == ValueType::VAL_INT && valB.type == ValueType::VAL_INT) res = valA.as.i > valB.as.i;
+                else res = valueToDouble(valA) > valueToDouble(valB);
+                pushV(SynapseValue(res));
+                decref(valA); decref(valB);
                 DISPATCH();
             }
             CASE(OP_LESS) {
-                SynapseValue& vB = stackTop[-1];
-                SynapseValue& vA = stackTop[-2];
+                SynapseValue valB = popV();
+                SynapseValue valA = popV();
                 bool res;
-                if (vA.type == ValueType::VAL_INT && vB.type == ValueType::VAL_INT) res = vA.as.i < vB.as.i;
-                else res = valueToDouble(vA) < valueToDouble(vB);
-                decref(vA); decref(vB);
-                stackTop[-2] = SynapseValue(res);
-                stackTop--;
+                if (valA.type == ValueType::VAL_INT && valB.type == ValueType::VAL_INT) res = valA.as.i < valB.as.i;
+                else res = valueToDouble(valA) < valueToDouble(valB);
+                pushV(SynapseValue(res));
+                decref(valA); decref(valB);
                 DISPATCH();
             }
             CASE(OP_NOT) { v = popV(); pushV(!valueToBool(v)); decref(v); DISPATCH(); }
@@ -439,9 +565,10 @@ InterpretResult VM::run() {
                 if (coll.type == ValueType::VAL_OBJ) {
                     if (coll.as.obj->type == ObjType::STR) {
                         int i = (int)valueToInt(idxVal);
-                        const std::string& s = static_cast<ObjString*>(coll.as.obj)->chars;
-                        if (i >= 0 && i < (int)s.length()) {
-                            SynapseValue res = makeString(std::string(1, s[i]));
+                        auto* strObj = static_cast<ObjString*>(coll.as.obj);
+                        if (i >= 0 && i < (int)strObj->length) {
+                            char ch[] = { strObj->c_str()[i], '\0' };
+                            SynapseValue res = makeString(std::string_view(ch, 1));
                             pushV(res);
                             decref(res);
                         } else {
@@ -642,39 +769,6 @@ InterpretResult VM::run() {
                 DISPATCH();
             }
 
-            CASE(OP_ADD_INT) {
-                stackTop[-2].as.i += stackTop[-1].as.i;
-                stackTop--;
-                DISPATCH();
-            }
-            CASE(OP_SUB_INT) {
-                stackTop[-2].as.i -= stackTop[-1].as.i;
-                stackTop--;
-                DISPATCH();
-            }
-            CASE(OP_MUL_INT) {
-                stackTop[-2].as.i *= stackTop[-1].as.i;
-                stackTop--;
-                DISPATCH();
-            }
-            CASE(OP_DIV_INT) {
-                if (stackTop[-1].as.i == 0) {
-                    std::cerr << "[RuntimeError] Division by zero" << std::endl;
-                    return InterpretResult::RUNTIME_ERROR;
-                }
-                stackTop[-2].as.i /= stackTop[-1].as.i;
-                stackTop--;
-                DISPATCH();
-            }
-            CASE(OP_GET_LOCAL_0) pushV(stackBase[currentFrame->frameStart + 0]); DISPATCH();
-            CASE(OP_GET_LOCAL_1) pushV(stackBase[currentFrame->frameStart + 1]); DISPATCH();
-            CASE(OP_GET_LOCAL_2) pushV(stackBase[currentFrame->frameStart + 2]); DISPATCH();
-            CASE(OP_GET_LOCAL_3) pushV(stackBase[currentFrame->frameStart + 3]); DISPATCH();
-            CASE(OP_GET_LOCAL_4) pushV(stackBase[currentFrame->frameStart + 4]); DISPATCH();
-            CASE(OP_GET_LOCAL_5) pushV(stackBase[currentFrame->frameStart + 5]); DISPATCH();
-            CASE(OP_GET_LOCAL_6) pushV(stackBase[currentFrame->frameStart + 6]); DISPATCH();
-            CASE(OP_GET_LOCAL_7) pushV(stackBase[currentFrame->frameStart + 7]); DISPATCH();
-            CASE(OP_GET_LOCAL_8) pushV(stackBase[currentFrame->frameStart + 8]); DISPATCH();
 #ifndef __GNUC__
             default: return InterpretResult::RUNTIME_ERROR;
         }

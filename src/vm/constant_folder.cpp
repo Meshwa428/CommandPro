@@ -50,7 +50,10 @@ static NodePtr valueToLiteralNode(const SynapseValue& v, int line, int col) {
     NodePtr node;
     if (v.type == ValueType::VAL_INT) node = std::make_unique<IntLiteralNode>(v.as.i);
     else if (v.type == ValueType::VAL_FLOAT) node = std::make_unique<FloatLiteralNode>(v.as.f);
-    else if (v.type == ValueType::VAL_OBJ && v.as.obj->type == ObjType::STR) node = std::make_unique<StringLiteralNode>(static_cast<ObjString*>(v.as.obj)->chars);
+    else if (v.type == ValueType::VAL_OBJ && v.as.obj->type == ObjType::STR) {
+        auto* s = static_cast<ObjString*>(v.as.obj);
+        node = std::make_unique<StringLiteralNode>(std::string(s->c_str(), s->length));
+    }
     else if (v.type == ValueType::VAL_BOOL) node = std::make_unique<BoolLiteralNode>(v.as.b);
     else if (v.type == ValueType::VAL_NULL) node = std::make_unique<NullLiteralNode>();
     else return nullptr;

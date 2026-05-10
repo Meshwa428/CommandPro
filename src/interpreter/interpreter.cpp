@@ -346,7 +346,11 @@ void Interpreter::visit(IndexAccessNode& n) {
         if (obj.as.obj->type == ObjType::TUPLE) lastValue = static_cast<ObjTuple*>(obj.as.obj)->elements[valueToInt(idx)];
         else if (obj.as.obj->type == ObjType::LIST) lastValue = static_cast<ObjList*>(obj.as.obj)->elements[valueToInt(idx)];
         else if (obj.as.obj->type == ObjType::MAP) lastValue = static_cast<ObjMap*>(obj.as.obj)->items[valueToString(idx)];
-        else if (obj.as.obj->type == ObjType::STR) lastValue = makeString(std::string(1, static_cast<ObjString*>(obj.as.obj)->chars[valueToInt(idx)]));
+        else if (obj.as.obj->type == ObjType::STR) {
+            auto* s = static_cast<ObjString*>(obj.as.obj);
+            char ch = s->c_str()[valueToInt(idx)];
+            lastValue = makeString(std::string_view(&ch, 1));
+        }
     }
 }
 
@@ -402,7 +406,7 @@ void Interpreter::registerBuiltins() {
             if (v.as.obj->type == ObjType::TUPLE) return (long long)static_cast<ObjTuple*>(v.as.obj)->elements.size();
             if (v.as.obj->type == ObjType::LIST) return (long long)static_cast<ObjList*>(v.as.obj)->elements.size();
             if (v.as.obj->type == ObjType::MAP) return (long long)static_cast<ObjMap*>(v.as.obj)->items.size();
-            if (v.as.obj->type == ObjType::STR) return (long long)static_cast<ObjString*>(v.as.obj)->chars.size();
+            if (v.as.obj->type == ObjType::STR) return (long long)static_cast<ObjString*>(v.as.obj)->length;
         }
         return 0LL;
     });

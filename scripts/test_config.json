@@ -1,0 +1,26 @@
+{
+    "synapse_binary": "./build/synapse",
+    "python_executable": "python3",
+    "test_directories": [
+        "tests/unit",
+        "tests/integration",
+        "tests/conformance",
+        "tests/functional",
+        "tests/benchmarks",
+        "tests/property"
+    ],
+    "defaults": {
+        "vm": true,
+        "iterations": 5,
+        "timeout": 30,
+        "verbose": false
+    },
+    "ci": {
+        "junit_output": "test-results.xml",
+        "fail_fast": false
+    },
+    "benchmark": {
+        "min_iterations": 3,
+        "warmup_runs": 2
+    }
+}

@@ -37,9 +37,14 @@ int Compiler::makeConstant(SynapseValue value) {
 
 void Compiler::emitConstant(SynapseValue value, int line) {
     int constant = makeConstant(value);
-    emitByte(OP_CONSTANT, line);
-    emitByte((constant >> 8) & 0xff, line);
-    emitByte(constant & 0xff, line);
+    if (constant <= 255) {
+        emitByte(OP_CONSTANT_8, line);
+        emitByte(static_cast<uint8_t>(constant), line);
+    } else {
+        emitByte(OP_CONSTANT, line);
+        emitByte((constant >> 8) & 0xff, line);
+        emitByte(constant & 0xff, line);
+    }
 }
 
 int Compiler::emitJump(uint8_t instruction, int line) {

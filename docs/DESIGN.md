@@ -140,10 +140,20 @@ To ensure long-term scalability and security, Synapse is built upon three founda
 ### 6.1 Memory Management (Hybrid Strategy)
 Synapse employs a hybrid approach to balance performance with ease of use:
 - **Small Values**: Primitive types (Int, Float, Bool) are stored inline within the stack or registers.
+- **Small String Optimization (SSO)**: Strings up to 15 bytes are stored inline within the `ObjString` header, eliminating heap allocations for short-lived transients and keys.
+- **Buffer Ownership**: `ObjString` supports taking ownership of existing `char*` buffers, avoiding redundant copies during concatenation and coercion.
+- **Immortal Constants**: Literal strings are globally interned during compilation and marked as immortal (`refCount = -1`), bypassing runtime reference counting.
 - **Short-lived Objects**: An **Arena Allocator** is used for temporary AST nodes and intermediate runtime values to minimize heap fragmentation.
-- **Long-lived Collections**: A **Mark-and-Sweep Garbage Collector (GC)** or optimized **Intrusive Reference Counting** handles recursive collections (Lists, Maps, Tuples) and closures, ensuring safety in async/event-driven contexts.
+- **Long-lived Collections**: Optimized **Intrusive Reference Counting** handles recursive collections (Lists, Maps, Tuples) and closures.
 
-### 6.2 Security & Sandboxing (Capabilities Model)
+### 6.2 String Subsystem Optimizations
+To handle high-volume automation workloads (e.g., repeated command generation), the string subsystem includes specialized optimizations:
+- **Concatenation Result Cache**: A thread-safe cache in the VM that memoizes string combinations. Repeatedly concatenating the same pointers (hot in loops) returns a cached reference in $O(1)$, bypassing allocation and hashing.
+- **In-place Append**: Internal mutation is enabled for transient strings (`refCount == 1`). This transforms $O(n^2)$ building patterns into linear $O(n)$ operations.
+- **Fast-Path Equality**: `OP_EQUAL` for strings uses pointer equality and interning uniqueness guarantees for immediate early-outs.
+- **Specialized Opcodes**: `OP_STRING_ADD` and `OP_STRING_EQUAL` fast-path common operations by bypassing generic arithmetic/equality dispatch.
+
+### 6.3 Security & Sandboxing (Capabilities Model)
 As an automation engine with hardware access, Synapse implements a strict security model:
 - **API-Level Capabilities**: OS interactions (Mouse, Keyboard, Screen) are restricted behind granular permissions.
 - **Sandboxed Execution**: External modules and untrusted scripts run in a restricted environment with no access to sensitive platform APIs unless explicitly granted via a manifest.

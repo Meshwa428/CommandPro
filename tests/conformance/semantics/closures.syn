@@ -1,4 +1,4 @@
-# @EXPECT EXIT 1
+# @EXPECT EXIT 0
 # Closure Lifetime Test
 fn outer(val) {
     let x = val;

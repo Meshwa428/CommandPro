@@ -1,0 +1,24 @@
+# Test Specification Schema
+# Place this YAML file alongside your .syn test file to define expected behavior
+#
+# Example:
+# exit: 0
+# stdout:
+#   - "Hello World"
+# stderr: []
+# skip_vm: false
+# timeout: 30
+# iterations: 1
+# tags: [regression, critical]
+# description: "Basic hello world test"
+
+exit: 0                    # Expected exit code (default: 0)
+stdout: []                 # List of expected stdout substrings
+stderr: []                 # List of expected stderr substrings
+skip_vm: false             # Skip when running with --vm flag
+skip_interp: false         # Skip when running with interpreter
+timeout: 30                # Timeout in seconds (default: 30)
+iterations: 1              # Number of times to run (for stability)
+baseline: stress_1_arithmetic  # Python baseline for benchmarking (without .py)
+tags: []                   # List of tags for filtering
+description: ""            # Human-readable test description

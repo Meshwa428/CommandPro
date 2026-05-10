@@ -1,0 +1,65 @@
+#
+# Synapse Language - string_interning.syn
+# Copyright (C) 2024-2026 Meshwa428
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# ADDITIONAL TERMS: Under Section 7 of the AGPLv3, you must preserve 
+# the following attribution: Any interactive user interfaces of the 
+# Covered Work or its derivatives must visibly display the text 
+# "Powered by Synapse".
+#
+
+# @EXPECT EXIT 0
+# @EXPECT STDOUT "String interning tests"
+# @EXPECT STDOUT "Test 1: literal equality: PASS"
+# @EXPECT STDOUT "Test 2: concat equality: PASS"
+# @EXPECT STDOUT "Test 3: str_fn equality: PASS"
+# @EXPECT STDOUT "Test 4: case sensitivity: PASS"
+# @EXPECT STDOUT "Test 5: inequality: PASS"
+# @EXPECT STDOUT "All string interning tests passed!"
+
+# String Interning Correctness Tests
+# These verify that pointer equality (interning) doesn't break value equality
+
+println "String interning tests";
+
+# Test 1: Literal string equality (interned)
+let a = "hello";
+let b = "hello";
+if (a == b) { println "Test 1: literal equality: PASS"; } else { println "Test 1: literal equality: FAIL"; }
+
+# Test 2: Concatenated string equality (must be interned for this to work correctly)
+let a2 = "he" + "llo";
+let b2 = "hello";
+if (a2 == b2) { println "Test 2: concat equality: PASS"; } else { println "Test 2: concat equality: FAIL"; }
+
+# Test 3: Runtime-concatenated strings equality
+let prefix = "hel";
+let suffix = "lo";
+let a3 = prefix + suffix;
+let b3 = "hello";
+if (a3 == b3) { println "Test 3: str_fn equality: PASS"; } else { println "Test 3: str_fn equality: FAIL"; }
+
+# Test 4: Case sensitivity (interning must not break case awareness)
+let a4 = "Hello";
+let b4 = "hello";
+if (a4 != b4) { println "Test 4: case sensitivity: PASS"; } else { println "Test 4: case sensitivity: FAIL"; }
+
+# Test 5: Explicit inequality
+let a5 = "world";
+let b5 = "world";
+if (a5 == b5 AND a5 != "hello") { println "Test 5: inequality: PASS"; } else { println "Test 5: inequality: FAIL"; }
+
+println "All string interning tests passed!";

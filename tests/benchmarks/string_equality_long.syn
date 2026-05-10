@@ -1,0 +1,19 @@
+#
+# String Equality Benchmark - long strings that Python won't intern
+# Force runtime allocation + content comparison
+#
+
+let start = now();
+let base = "abcdefghijklmnopqrstuvwxyz";
+let suffix = "1234567890";
+let i = 0;
+loop while (i < 1000000) {
+    let s1 = base + suffix + base + suffix;
+    let s2 = base + suffix + base + suffix;
+    if (s1 == s2) {
+        # success
+    }
+    i = i + 1;
+}
+let end = now();
+println "RESULT:" + (end - start);

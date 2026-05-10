@@ -4,8 +4,9 @@
 namespace Synapse {
 
 enum OpCode : uint8_t {
-    OP_CONSTANT,      // [const_index]
-    OP_CONSTANT_16,   // [const_index_high, const_index_low]
+    OP_CONSTANT,      // [const_index_high, const_index_low]
+    OP_CONSTANT_8,    // [const_index]
+    OP_CONSTANT_16,   // alias for OP_CONSTANT
     OP_NULL,
     OP_TRUE,
     OP_FALSE,
@@ -60,21 +61,9 @@ enum OpCode : uint8_t {
     OP_WAIT,
     OP_ASK,            // [prompt_const, var_const, type_const]
 
-    // Specialized Opcodes (Phase 3)
-    OP_ADD_INT,
-    OP_SUB_INT,
-    OP_MUL_INT,
-    OP_DIV_INT,
-    
-    OP_GET_LOCAL_0,
-    OP_GET_LOCAL_1,
-    OP_GET_LOCAL_2,
-    OP_GET_LOCAL_3,
-    OP_GET_LOCAL_4,
-    OP_GET_LOCAL_5,
-    OP_GET_LOCAL_6,
-    OP_GET_LOCAL_7,
-    OP_GET_LOCAL_8
+    // Specialized String Opcodes
+    OP_STRING_ADD,
+    OP_STRING_EQUAL
 };
 
 } // namespace Synapse

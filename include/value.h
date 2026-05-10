@@ -3,14 +3,46 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <stdexcept>
 #include <functional>
 #include <iostream>
 #include <cstdint>
+#include <cstring>
 
 namespace Synapse {
 struct ASTNode;
+
+static inline uint64_t computeStringHash(const char* str, size_t len) {
+    uint64_t hash = 14695981039346656037ULL;
+    for (size_t i = 0; i < len; ++i) {
+        hash ^= static_cast<uint8_t>(str[i]);
+        hash *= 1099511628211ULL;
+    }
+    return hash == 0 ? 1 : hash;
+}
+
+// ── String Telemetry ─────────────────────────────────────────────────────
+struct StringTelemetry {
+    std::atomic<long long> totalAllocations{0};
+    std::atomic<long long> ssoAllocations{0};
+    std::atomic<long long> heapAllocations{0};
+    std::atomic<long long> concatOperations{0};
+    std::atomic<long long> stringEqualityChecks{0};
+    std::atomic<long long> hashComparisons{0};
+
+    double averageLength() const {
+        long long alloc = totalAllocations.load();
+        return alloc > 0 ? (double)totalLength.load() / alloc : 0.0;
+    }
+    std::atomic<long long> totalLength{0};
+};
+
+StringTelemetry& getStringTelemetry();
+
+// ── SSO Configuration ─────────────────────────────────────────────────────
+static constexpr size_t SSO_MAX_SIZE = 15;
 
 // ── Value Types ──────────────────────────────────────────────────────────
 enum class ValueType {
@@ -78,8 +110,8 @@ struct SynapseValue {
 };
 
 // ── Memory Management ────────────────────────────────────────────────────
-inline void incref(Obj* o) { if (o) o->refCount++; }
-inline void decref(Obj* o) { if (o) { o->refCount--; if (o->refCount <= 0) delete o; } }
+inline void incref(Obj* o) { if (o && o->refCount != -1) o->refCount++; }
+inline void decref(Obj* o) { if (o && o->refCount != -1) { o->refCount--; if (o->refCount <= 0) delete o; } }
 
 inline void incref(SynapseValue v) {
     if (v.type == ValueType::VAL_OBJ) incref(v.as.obj);
@@ -89,12 +121,63 @@ inline void decref(SynapseValue v) {
     if (v.type == ValueType::VAL_OBJ) decref(v.as.obj);
 }
 
+// ── StringBuilder for efficient concatenation ────────────────────────────
+struct StringBuilder {
+    char* buffer;
+    size_t length;
+    size_t capacity;
+
+    explicit StringBuilder(size_t initialCapacity = 64);
+    ~StringBuilder();
+
+    void append(const char* str, size_t len);
+    void reserve(size_t newCapacity);
+    void clear();
+
+    std::string build() { return std::string(buffer, length); }
+    std::string_view view() const { return std::string_view(buffer, length); }
+
+    StringBuilder(const StringBuilder&) = delete;
+    StringBuilder& operator=(const StringBuilder&) = delete;
+};
+
 // ── Specialized Objects ──────────────────────────────────────────────────
 
 struct ObjString : public Obj {
-    std::string chars;
+    size_t length;
+    uint64_t hash;
     bool isInterned = false;
-    explicit ObjString(std::string s) : Obj(ObjType::STR), chars(std::move(s)) {}
+    bool isSmall = false;
+    union {
+        char small[SSO_MAX_SIZE];
+        struct {
+            char* chars;
+            size_t capacity;
+        };
+    };
+
+    explicit ObjString(const char* cstr);
+    explicit ObjString(std::string_view sv);
+    explicit ObjString(const std::string& s);
+    explicit ObjString(char* buffer, size_t length); // Takes ownership
+    ~ObjString();
+
+    const char* c_str() const { return isSmall ? small : chars; }
+
+    void ensureCapacity(size_t needed);
+    void append(const char* str, size_t len);
+
+    inline bool stringEquals(const ObjString* other) const {
+        if (this == other) return true;
+        if (isInterned && other->isInterned) return false;
+        if (length != other->length) return false;
+        if (hash != 0 && other->hash != 0 && hash != other->hash) return false;
+        return std::memcmp(c_str(), other->c_str(), length) == 0;
+    }
+
+#ifdef SYNAPSE_PROFILER
+    static StringTelemetry telemetry;
+#endif
 };
 
 struct ObjTuple : public Obj {
@@ -170,6 +253,9 @@ std::pair<int, int> extractCoord(const SynapseValue& v, int line = 0, int col = 
 
 // ── Allocation Helpers ───────────────────────────────────────────────────
 SynapseValue makeString(std::string s);
+SynapseValue makeString(std::string_view sv);
+SynapseValue makeString(const char* cstr);
+SynapseValue takeString(char* buffer, size_t length);
 SynapseValue makeTuple(std::vector<SynapseValue> elements);
 SynapseValue makeList(std::vector<SynapseValue> elements = {});
 SynapseValue makeMap();

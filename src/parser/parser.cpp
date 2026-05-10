@@ -272,7 +272,26 @@ NodePtr Parser::parseAsk() {
     std::string typeCast;
     if (check(TokenType::AS)) {
         eat(TokenType::AS);
-        typeCast = eat(TokenType::IDENTIFIER).value;
+        if (check(TokenType::IDENTIFIER)) {
+            typeCast = eat(TokenType::IDENTIFIER).value;
+        } else if (check(TokenType::INT_TYPE)) {
+            eat(TokenType::INT_TYPE);
+            typeCast = "int";
+        } else if (check(TokenType::FLOAT_TYPE)) {
+            eat(TokenType::FLOAT_TYPE);
+            typeCast = "float";
+        } else if (check(TokenType::BOOL_TYPE)) {
+            eat(TokenType::BOOL_TYPE);
+            typeCast = "bool";
+        } else if (check(TokenType::STR_TYPE)) {
+            eat(TokenType::STR_TYPE);
+            typeCast = "str";
+        } else if (check(TokenType::TIME_TYPE)) {
+            eat(TokenType::TIME_TYPE);
+            typeCast = "time";
+        } else {
+            typeCast = eat(TokenType::IDENTIFIER).value;
+        }
     }
     eat(TokenType::SEMICOLON);
     auto node = std::make_unique<AskNode>(prompt, varName, typeCast);

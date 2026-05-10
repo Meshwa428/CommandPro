@@ -33,7 +33,7 @@ python3 scripts/test_suite.py benchmark
 - **Target**: The efficiency of indexed global access vs. hashed name-based lookup.
 
 ### 5. String Equality (`string_equality.syn`)
-- **Goal**: Validates string interning performance.
+- **Goal**: Validates string interning and pointer comparison performance.
 - **Method**: Performs 1,000,000 string comparisons using variables to prevent constant folding.
 - **Target**: Fast-path comparison for interned strings.
 
@@ -46,6 +46,17 @@ python3 scripts/test_suite.py benchmark
 - **Goal**: Evaluates VM branch prediction behavior.
 - **Method**: Executes unpredictable if-else branches based on loop index parity.
 - **Target**: Instruction pipeline flushing and jump optimization.
+
+### 8. Long String Equality (`string_equality_long.syn`)
+- **Goal**: Measures efficiency of non-interned, heap-allocated string comparison.
+- **Method**: Concatenates long base/suffix strings at runtime and compares them.
+- **Target**: Hash-precheck and `memcmp` efficiency.
+
+### 9. String Concatenation (`string_concat.syn`)
+- **Goal**: Stress tests runtime string building and allocation.
+- **Method**: Repeatedly concatenates variables in a tight loop.
+- **Target**: Allocation speed, `ConcatCache` hit rate, and in-place append efficiency.
+
 
 ## Performance Considerations
 
@@ -68,7 +79,9 @@ We use CPython as a baseline because it is a highly optimized, industry-standard
 |---|---|---|
 | **Raw Dispatch** | < Python | ✅ (Currently ~0.7x) |
 | **Global Access** | < Python | ✅ (Currently ~0.4x) |
-| **Allocation** | < 1.5x Python | ⚠️ (Currently ~2.8x) |
+| **Allocation** | < 1.5x Python | ✅ (Currently ~0.3x) |
+| **String Concat** | < Python | ✅ (Currently ~0.7x) |
+| **Long Equality** | < Python | ✅ (Currently ~0.5x) |
 | **Native Bridge** | < 1.2x Python | ⚠️ (Currently ~1.5x) |
 
 ## High-Precision Timing

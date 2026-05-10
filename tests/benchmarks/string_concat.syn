@@ -1,0 +1,19 @@
+#
+# String Concat Benchmark - tests runtime string concatenation
+# This forces NEW string allocations, bypassing compile-time interning
+#
+
+let start = now();
+let base = "hello";
+let suffix = "_world";
+let i = 0;
+loop while (i < 1000000) {
+    let s1 = base + suffix;
+    let s2 = base + suffix;
+    if (s1 == s2) {
+        # success
+    }
+    i = i + 1;
+}
+let end = now();
+println "RESULT:" + (end - start);

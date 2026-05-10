@@ -3,12 +3,23 @@
 #include <unordered_map>
 #include <cmath>
 #include <iomanip>
+#include <cstring>
 
 namespace Synapse {
 
 #ifdef SYNAPSE_PROFILER
 std::atomic<long long> Obj::totalAllocations{0};
+StringTelemetry ObjString::telemetry{};
 #endif
+
+StringTelemetry& getStringTelemetry() {
+#ifdef SYNAPSE_PROFILER
+    return ObjString::telemetry;
+#else
+    static StringTelemetry dummy;
+    return dummy;
+#endif
+}
 
 Obj::Obj(ObjType t) : type(t), refCount(0) {
 #ifdef SYNAPSE_PROFILER
@@ -22,8 +33,195 @@ ObjList::~ObjList()   { for (auto& e : elements) decref(e); }
 ObjMap::~ObjMap()     { for (auto& pair : items) decref(pair.second); }
 ObjFunction::~ObjFunction() { for (auto& c : constants) decref(c); }
 
+void ObjString::ensureCapacity(size_t needed) {
+    if (isSmall) {
+        if (needed <= SSO_MAX_SIZE) return;
+        char* newChars = new char[needed + 1];
+        std::memcpy(newChars, small, length + 1);
+        chars = newChars;
+        capacity = needed + 1;
+        isSmall = false;
+    } else if (needed + 1 > capacity) {
+        size_t newCap = std::max(needed + 1, capacity * 2);
+        char* newChars = new char[newCap];
+        std::memcpy(newChars, chars, length + 1);
+        delete[] chars;
+        chars = newChars;
+        capacity = newCap;
+    }
+}
+
+void ObjString::append(const char* str, size_t len) {
+    ensureCapacity(length + len);
+    if (isSmall) {
+        std::memcpy(small + length, str, len);
+        length += len;
+        small[length] = '\0';
+        hash = computeStringHash(small, length);
+    } else {
+        std::memcpy(chars + length, str, len);
+        length += len;
+        chars[length] = '\0';
+        hash = computeStringHash(chars, length);
+    }
+}
+
+StringBuilder::StringBuilder(size_t initialCapacity) : buffer(nullptr), length(0), capacity(0) {
+    reserve(initialCapacity);
+}
+
+StringBuilder::~StringBuilder() {
+    delete[] buffer;
+}
+
+void StringBuilder::reserve(size_t newCapacity) {
+    if (newCapacity <= capacity) return;
+    size_t newCap = std::max(newCapacity, capacity * 2);
+    if (newCap < 64) newCap = 64;
+    char* newBuffer = new char[newCap];
+    if (buffer) {
+        std::memcpy(newBuffer, buffer, length);
+        delete[] buffer;
+    }
+    buffer = newBuffer;
+    capacity = newCap;
+}
+
+void StringBuilder::clear() {
+    length = 0;
+}
+
+void StringBuilder::append(const char* str, size_t len) {
+    if (len == 0) return;
+    reserve(length + len + 1);
+    std::memcpy(buffer + length, str, len);
+    length += len;
+    buffer[length] = '\0';
+}
+
+ObjString::ObjString(const char* cstr) : Obj(ObjType::STR), length(std::strlen(cstr)), hash(0), isSmall(false) {
+    if (length <= SSO_MAX_SIZE) {
+        isSmall = true;
+        std::memcpy(small, cstr, length);
+        small[length] = '\0';
+        hash = computeStringHash(small, length);
+#ifdef SYNAPSE_PROFILER
+        telemetry.ssoAllocations++;
+        telemetry.totalAllocations++;
+        telemetry.totalLength += length;
+#endif
+    } else {
+        capacity = length + 1;
+        chars = new char[capacity];
+        std::memcpy(chars, cstr, length + 1);
+        hash = computeStringHash(chars, length);
+#ifdef SYNAPSE_PROFILER
+        telemetry.heapAllocations++;
+        telemetry.totalAllocations++;
+        telemetry.totalLength += length;
+#endif
+    }
+}
+
+ObjString::ObjString(std::string_view sv) : Obj(ObjType::STR), length(sv.length()), hash(0), isSmall(false) {
+    if (length <= SSO_MAX_SIZE) {
+        isSmall = true;
+        std::memcpy(small, sv.data(), length);
+        small[length] = '\0';
+        hash = computeStringHash(small, length);
+#ifdef SYNAPSE_PROFILER
+        telemetry.ssoAllocations++;
+        telemetry.totalAllocations++;
+        telemetry.totalLength += length;
+#endif
+    } else {
+        capacity = length + 1;
+        chars = new char[capacity];
+        std::memcpy(chars, sv.data(), length);
+        chars[length] = '\0';
+        hash = computeStringHash(chars, length);
+#ifdef SYNAPSE_PROFILER
+        telemetry.heapAllocations++;
+        telemetry.totalAllocations++;
+        telemetry.totalLength += length;
+#endif
+    }
+}
+
+ObjString::ObjString(const std::string& s) : Obj(ObjType::STR), length(s.length()), hash(0), isSmall(false) {
+    if (length <= SSO_MAX_SIZE) {
+        isSmall = true;
+        std::memcpy(small, s.data(), length);
+        small[length] = '\0';
+        hash = computeStringHash(small, length);
+#ifdef SYNAPSE_PROFILER
+        telemetry.ssoAllocations++;
+        telemetry.totalAllocations++;
+        telemetry.totalLength += length;
+#endif
+    } else {
+        capacity = length + 1;
+        chars = new char[capacity];
+        std::memcpy(chars, s.data(), length + 1);
+        hash = computeStringHash(chars, length);
+#ifdef SYNAPSE_PROFILER
+        telemetry.heapAllocations++;
+        telemetry.totalAllocations++;
+        telemetry.totalLength += length;
+#endif
+    }
+}
+
+ObjString::ObjString(char* buffer, size_t len) : Obj(ObjType::STR), length(len), hash(0), isSmall(false) {
+    if (length <= SSO_MAX_SIZE) {
+        isSmall = true;
+        std::memcpy(small, buffer, length);
+        small[length] = '\0';
+        hash = computeStringHash(small, length);
+        delete[] buffer;
+#ifdef SYNAPSE_PROFILER
+        telemetry.ssoAllocations++;
+        telemetry.totalAllocations++;
+        telemetry.totalLength += length;
+#endif
+    } else {
+        chars = buffer;
+        capacity = length + 1;
+        hash = computeStringHash(chars, length);
+#ifdef SYNAPSE_PROFILER
+        telemetry.heapAllocations++;
+        telemetry.totalAllocations++;
+        telemetry.totalLength += length;
+#endif
+    }
+}
+
+ObjString::~ObjString() {
+    if (!isSmall) {
+        delete[] chars;
+    }
+}
+
 SynapseValue makeString(std::string s) {
-    auto obj = new ObjString(std::move(s));
+    auto obj = new ObjString(s);
+    incref(obj);
+    return SynapseValue(obj);
+}
+
+SynapseValue makeString(std::string_view sv) {
+    auto obj = new ObjString(sv);
+    incref(obj);
+    return SynapseValue(obj);
+}
+
+SynapseValue makeString(const char* cstr) {
+    auto obj = new ObjString(cstr);
+    incref(obj);
+    return SynapseValue(obj);
+}
+
+SynapseValue takeString(char* buffer, size_t length) {
+    auto obj = new ObjString(buffer, length);
     incref(obj);
     return SynapseValue(obj);
 }
@@ -63,7 +261,7 @@ std::string valueToString(const SynapseValue& v) {
         case ValueType::VAL_OBJ: {
             if (!v.as.obj) return "null-obj";
             switch (v.as.obj->type) {
-                case ObjType::STR:   return static_cast<ObjString*>(v.as.obj)->chars;
+                case ObjType::STR:   return std::string(static_cast<ObjString*>(v.as.obj)->c_str(), static_cast<ObjString*>(v.as.obj)->length);
                 case ObjType::TUPLE: {
                     auto t = static_cast<ObjTuple*>(v.as.obj);
                     std::string s = "(";
@@ -137,7 +335,7 @@ bool valuesAreEqual(const SynapseValue& a, const SynapseValue& b) {
             auto* sA = static_cast<ObjString*>(ao);
             auto* sB = static_cast<ObjString*>(bo);
             if (sA->isInterned && sB->isInterned) return sA == sB;
-            return sA->chars == sB->chars;
+            return sA->stringEquals(sB);
         }
         case ObjType::TUPLE: {
             auto& ae = static_cast<ObjTuple*>(ao)->elements;
