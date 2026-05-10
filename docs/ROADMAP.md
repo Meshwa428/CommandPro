@@ -122,10 +122,12 @@ The language has transitioned from a tree-walking interpreter to a high-performa
 - [x] **Flattened Scope Frames**: Replace recursive `Environment` pointers with a flat stack of activation records (frames).
 - [x] **Bytecode Compiler**: Implement a compilation pass that transforms the AST into a linear stream of opcodes.
 - [x] **Stack-based Virtual Machine**: High-speed dispatch loop replacing AST recursion.
-- [ ] **Memory Management Strategy**: Implement a dedicated Garbage Collection (GC) (Current: Ref-Counting + Manual management).
 - [x] **Optimized Value System**: `SynapseValue` variant with `shared_ptr` to heap objects.
 - [x] **Constant Folding & Interning**: Pre-calculate static expressions and intern all strings.
-- [ ] **Closure & Upvalue Support**: (In Progress) Implement proper lexical closures.
+- [x] **String Subsystem Overhaul**: Implemented Small String Optimization (SSO), Concatenation Caching, and in-place buffer mutation.
+- [x] **Microarchitectural Tuning**: Cached local IP and Frame Pointer (FP) registers in the VM loop; added specialized opcodes for locals and global increments.
+- [ ] **Memory Management Strategy**: Implement a generational Garbage Collection (GC) to replace/complement reference counting.
+- [ ] **Closure & Upvalue Support**: (In Progress) Implement proper lexical closures and stack-to-heap upvalue migration.
 
 ---
 
@@ -152,6 +154,20 @@ The language has transitioned from a tree-walking interpreter to a high-performa
 - [ ] Full documentation (LANGUAGE_SPEC, SYNTAX, STDLIB, INTERNALS, CROSS_PLATFORM)
 - [ ] Pre-built binary releases for Linux (x86_64) and Windows (x64)
 - [ ] GitHub Actions CI/CD pipeline (build + test on Linux and Windows)
+
+---
+
+## v1.1.0 — Advanced Runtime & Micro-Optimizations
+
+**Goal:** Bridge the performance gap between interpreted bytecode and native execution.
+
+**Planned Features:**
+- [ ] **JIT (Just-In-Time) Compiler**: Implement a tiered compilation strategy (Interpreter → Baseline JIT → Optimized JIT) using a backend like LLVM or custom machine code generation.
+- [ ] **Escape Analysis**: Detect objects that do not "escape" their creating scope to allow high-speed **Stack Allocation** instead of heap allocation.
+- [ ] **TLABs (Thread-Local Allocation Buffers)**: Implement pointer-bump allocation within thread-local memory regions for zero-overhead transient object creation.
+- [ ] **Dynamic String Strategy**: Runtime optimization of string concatenation (similar to Java's `StringConcatFactory`) to pre-calculate buffers and minimize copies.
+- [ ] **Native StringBuilder**: Expose a high-performance `StringBuilder` class to the language for linear-time string construction in hot loops.
+- [ ] **Inline Caches (Adaptive Quickening)**: Specialize call sites and property lookups based on runtime type feedback to bypass hash-table dispatch.
 
 ---
 
