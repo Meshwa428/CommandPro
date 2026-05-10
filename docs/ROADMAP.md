@@ -162,7 +162,7 @@ The language has transitioned from a tree-walking interpreter to a high-performa
 **Goal:** Bridge the performance gap between interpreted bytecode and native execution.
 
 **Planned Features:**
-- [ ] **JIT (Just-In-Time) Compiler**: Implement a tiered compilation strategy (Interpreter → Baseline JIT → Optimized JIT) using a backend like LLVM or custom machine code generation.
+- [ ] **JIT (Just-In-Time) Compiler**: Implement a tiered compilation strategy. The VM starts as an interpreter but maintains invocation counters for every function. Once a method becomes "hot" (crossing a threshold), a baseline (C1) or optimized (C2) compiler kicks in to translate the bytecode into raw machine code (Assembly) for near-native execution. Backend candidates include LLVM, libjit, or custom ASM generation.
 - [ ] **Escape Analysis**: Detect objects that do not "escape" their creating scope to allow high-speed **Stack Allocation** instead of heap allocation.
 - [ ] **TLABs (Thread-Local Allocation Buffers)**: Implement pointer-bump allocation within thread-local memory regions for zero-overhead transient object creation.
 - [ ] **Dynamic String Strategy**: Runtime optimization of string concatenation (similar to Java's `StringConcatFactory`) to pre-calculate buffers and minimize copies.
