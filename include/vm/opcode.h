@@ -16,9 +16,12 @@ enum OpCode : uint8_t {
     
     OP_GET_LOCAL,     // [slot_index]
     OP_SET_LOCAL,     // [slot_index]
+    OP_MOVE_LOCAL,    // [slot_index] - Pushes and nulls out slot
     OP_GET_GLOBAL,    // [name_const_index]
     OP_SET_GLOBAL,    // [name_const_index]
     OP_DEFINE_GLOBAL, // [name_const_index]
+    OP_MOVE_GLOBAL,   // [name_const_index] - Pushes and nulls out global
+    OP_INC_GLOBAL,    // [name_const_index]
 
     OP_EQUAL,
     OP_STRICT_EQUAL,
@@ -60,6 +63,35 @@ enum OpCode : uint8_t {
     
     OP_WAIT,
     OP_ASK,            // [prompt_const, var_const, type_const]
+
+    // Specialized Opcodes
+    OP_GET_LOCAL_0,
+    OP_GET_LOCAL_1,
+    OP_GET_LOCAL_2,
+    OP_GET_LOCAL_3,
+    OP_GET_LOCAL_4,
+    OP_GET_LOCAL_5,
+    OP_GET_LOCAL_6,
+    OP_GET_LOCAL_7,
+    OP_GET_LOCAL_8,
+
+    OP_SET_LOCAL_0,
+    OP_SET_LOCAL_1,
+    OP_SET_LOCAL_2,
+    OP_SET_LOCAL_3,
+    OP_SET_LOCAL_4,
+    OP_SET_LOCAL_5,
+    OP_SET_LOCAL_6,
+    OP_SET_LOCAL_7,
+    OP_SET_LOCAL_8,
+
+    OP_INC_LOCAL,
+    OP_INC_LOCAL_0,
+    OP_INC_LOCAL_1,
+    OP_INC_LOCAL_2,
+    OP_INC_LOCAL_3,
+    OP_INC_LOCAL_4,
+    OP_INC_LOCAL_5,
 
     // Specialized String Opcodes
     OP_STRING_ADD,

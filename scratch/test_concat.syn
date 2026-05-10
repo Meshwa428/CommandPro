@@ -1,0 +1,3 @@
+println "A" + 1;
+println "B" + 2.5;
+println 3 + "C";

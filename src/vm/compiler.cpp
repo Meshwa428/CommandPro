@@ -114,7 +114,11 @@ void Compiler::visit(IdentifierNode& n) {
         emitByte((index >> 8) & 0xff, n.line);
         emitByte(index & 0xff, n.line);
     } else {
-        emitBytes(OP_GET_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+        if (n.slotIndex <= 8) {
+            emitByte(static_cast<uint8_t>(OP_GET_LOCAL_0 + n.slotIndex), n.line);
+        } else {
+            emitBytes(OP_GET_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+        }
     }
 }
 
@@ -128,8 +132,12 @@ void Compiler::visit(VarDeclNode& n) {
         emitByte((index >> 8) & 0xff, n.line);
         emitByte(index & 0xff, n.line);
     } else {
-        emitBytes(OP_SET_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
-        emitByte(OP_POP, n.line); // Pop the initial value since it's stored in slot
+        if (n.slotIndex <= 8) {
+            emitByte(static_cast<uint8_t>(OP_SET_LOCAL_0 + n.slotIndex), n.line);
+        } else {
+            emitBytes(OP_SET_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+        }
+        emitByte(OP_POP, n.line); 
     }
 }
 
@@ -143,12 +151,70 @@ void Compiler::visit(TypedVarDeclNode& n) {
         emitByte((index >> 8) & 0xff, n.line);
         emitByte(index & 0xff, n.line);
     } else {
-        emitBytes(OP_SET_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+        if (n.slotIndex <= 8) {
+            emitByte(static_cast<uint8_t>(OP_SET_LOCAL_0 + n.slotIndex), n.line);
+        } else {
+            emitBytes(OP_SET_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+        }
         emitByte(OP_POP, n.line);
     }
 }
 
 void Compiler::visit(AssignNode& n) {
+    // Check for i = i + 1 (simple increment optimization)
+    if (n.value->type == NodeType::BINARY_EXPR) {
+        auto* be = static_cast<BinaryExprNode*>(n.value.get());
+        if (be->op == "+" && be->left->type == NodeType::IDENTIFIER && be->right->type == NodeType::INT_LIT) {
+            auto* id = static_cast<IdentifierNode*>(be->left.get());
+            auto* lit = static_cast<IntLiteralNode*>(be->right.get());
+            if (id->isGlobal == n.isGlobal && (n.isGlobal ? (id->name == n.name) : (id->slotIndex == n.slotIndex)) && lit->value == 1) {
+                if (n.isGlobal) {
+                    int index = getGlobalIndex(n.name);
+                    emitByte(OP_INC_GLOBAL, n.line);
+                    emitByte((index >> 8) & 0xff, n.line);
+                    emitByte(index & 0xff, n.line);
+                } else {
+                    if (n.slotIndex <= 5) emitByte(static_cast<uint8_t>(OP_INC_LOCAL_0 + n.slotIndex), n.line);
+                    else emitBytes(OP_INC_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+                }
+                return;
+            }
+        }
+    }
+
+    // Optimization: s = s + ... (Move local/global to stack to allow in-place append)
+    if (n.value->type == NodeType::BINARY_EXPR) {
+        auto* be = static_cast<BinaryExprNode*>(n.value.get());
+        if (be->op == "+" && be->left->type == NodeType::IDENTIFIER) {
+            auto* id = static_cast<IdentifierNode*>(be->left.get());
+            if (id->isGlobal == n.isGlobal && (n.isGlobal ? (id->name == n.name) : (id->slotIndex == n.slotIndex))) {
+                // Emit OP_MOVE_LOCAL/GLOBAL for the left operand
+                if (n.isGlobal) {
+                    int index = getGlobalIndex(n.name);
+                    emitByte(OP_MOVE_GLOBAL, n.line);
+                    emitByte((index >> 8) & 0xff, n.line);
+                    emitByte(index & 0xff, n.line);
+                } else {
+                    emitBytes(OP_MOVE_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+                }
+                
+                be->right->accept(*this);
+                emitByte(OP_ADD, n.line);
+                
+                if (n.isGlobal) {
+                    int index = getGlobalIndex(n.name);
+                    emitByte(OP_SET_GLOBAL, n.line);
+                    emitByte((index >> 8) & 0xff, n.line);
+                    emitByte(index & 0xff, n.line);
+                } else {
+                    if (n.slotIndex <= 8) emitByte(static_cast<uint8_t>(OP_SET_LOCAL_0 + n.slotIndex), n.line);
+                    else emitBytes(OP_SET_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+                }
+                return;
+            }
+        }
+    }
+
     n.value->accept(*this);
     if (n.isGlobal) {
         int index = getGlobalIndex(n.name);
@@ -156,7 +222,11 @@ void Compiler::visit(AssignNode& n) {
         emitByte((index >> 8) & 0xff, n.line);
         emitByte(index & 0xff, n.line);
     } else {
-        emitBytes(OP_SET_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+        if (n.slotIndex <= 8) {
+            emitByte(static_cast<uint8_t>(OP_SET_LOCAL_0 + n.slotIndex), n.line);
+        } else {
+            emitBytes(OP_SET_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+        }
     }
 }
 
@@ -178,7 +248,14 @@ void Compiler::visit(CompoundAssignNode& n) {
         emitByte((index >> 8) & 0xff, n.line);
         emitByte(index & 0xff, n.line);
     } else {
-        emitBytes(OP_GET_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+        // Optimization: s += ...
+        if (n.op == "+") {
+            emitBytes(OP_MOVE_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+        } else {
+            if (n.slotIndex <= 8) emitByte(static_cast<uint8_t>(OP_GET_LOCAL_0 + n.slotIndex), n.line);
+            else emitBytes(OP_GET_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+        }
+        
         n.value->accept(*this);
         if (n.op == "+")      emitByte(OP_ADD, n.line);
         else if (n.op == "-")  emitByte(OP_SUBTRACT, n.line);
@@ -187,7 +264,12 @@ void Compiler::visit(CompoundAssignNode& n) {
         else if (n.op == "//") emitByte(OP_INT_DIVIDE, n.line);
         else if (n.op == "%")  emitByte(OP_MODULO, n.line);
         else if (n.op == "**") emitByte(OP_EXPONENT, n.line);
-        emitBytes(OP_SET_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+        
+        if (n.slotIndex <= 8) {
+            emitByte(static_cast<uint8_t>(OP_SET_LOCAL_0 + n.slotIndex), n.line);
+        } else {
+            emitBytes(OP_SET_LOCAL, static_cast<uint8_t>(n.slotIndex), n.line);
+        }
     }
 }
 
