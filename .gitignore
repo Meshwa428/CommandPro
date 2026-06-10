@@ -1,0 +1,23 @@
+# Build artifacts
+build/
+out/
+*.o
+*.a
+*.so
+
+# Tooling caches
+.cache/
+__pycache__/
+compile_commands.json
+
+# Installed package deps (recreated by `syn install`)
+syn_modules/
+
+# Editor noise
+.vscode/
+.idea/
+*.swp
+
+# Local scratch
+scratch/
+test-results.xml
