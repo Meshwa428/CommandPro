@@ -21,3 +21,9 @@ syn_modules/
 # Local scratch
 scratch/
 test-results.xml
+
+# RAT training data (large binary/data files)
+Dataset/mouse-movement-data/
+Dataset/mouse-movement-data.zip
+Dataset/movements.jsonl
+Dataset/movements_stats.txt
