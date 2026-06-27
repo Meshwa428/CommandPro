@@ -332,3 +332,167 @@ items
 | 10 | Bitwise | deferred post-1.0 |
 | 11 | Optional chaining | `obj?.key` |
 | 12 | Null coalescing | `??` and `??=` |
+
+---
+
+## 16. App Automation & UI Control
+
+> Native API first. YOLO-UI fallback. Smart, lightweight, ships in < 10MB.
+
+### 16.1 Three-Layer Stack
+
+```
+tap "Submit"
+    │
+    ├─ Layer 0: AT-SPI2 (Linux) / UIA (Windows)   ~0ms   exact element tree
+    │           not available / not found
+    ├─ Layer 1: YOLO-UI + OCR                      ~15ms  ships with syn (~8MB)
+    │           confidence < threshold
+    └─ Layer 2: CLIP semantic match                ~50ms  optional (syn install clip-ui)
+```
+
+Layers 0 + 1 ship with `syn` by default. Layer 2 is opt-in.
+
+### 16.2 Commands
+
+```syn
+# Smart hybrid (native → YOLO → CLIP, in order)
+tap "Submit"                          # text match
+tap button "Submit"                   # type hint → faster YOLO filtering
+tap input "Username"
+tap checkbox "Remember me"
+tap dropdown "Country"
+
+# Explicit native API only
+find "Submit"
+find button "Submit"
+
+# Explicit AI vision only
+see "Submit"
+see "the close button at top right"   # natural language, CLIP matching
+see button "Submit" min_confidence 0.8
+
+# Store element
+let btn   = tap button "Submit"
+let field = tap input "Username"
+type "meshwa" in field
+click btn
+
+# Interaction verbs on found elements
+check found         # check a checkbox / radio
+uncheck found
+select "Option A" in found    # select dropdown option
+scroll to found               # scroll element into view
+read found                    # → string (reads element's text value)
+
+# Predicates
+if exists "Submit" { tap "Submit" }
+if enabled "Submit" { ... }
+if checked "Remember me" { ... }
+let visible = exists "Error message"
+
+# Scope block — all taps/finds inside search within this window only
+in "Firefox" {
+    tap input "Search"
+    type "Synapse lang"
+    tap "Google Search"
+}
+
+# Confidence control
+let btn = see "submit button" min_confidence 0.8
+if btn is none { say "element not found" }
+```
+
+### 16.3 YOLO-UI Model
+
+Trained specifically on UI element detection. Not a general object detector.
+
+**Classes (11):**
+`button` `input_text` `checkbox` `radio` `dropdown` `link` `icon` `toggle` `slider` `tab` `menu_item`
+
+**Why YOLO works better than OmniParser here:**
+- UI elements are visually stereotyped (rectangular, high-contrast, ~11 types)
+- YOLOv8n fine-tuned on UI: ~6MB / ~8ms CPU inference
+- OmniParser (CLIP backbone): ~500MB+ / ~500ms — unacceptable to ship
+
+**Model sizes:**
+
+| Variant | Size | CPU speed | Ships with |
+|---|---|---|---|
+| `yolo_ui.onnx` | ~6MB | ~8ms | `syn` default |
+| `yolo_ui_int8.onnx` | ~3MB | ~5ms | `syn` slim |
+
+**Training data (all open-source + self-generated):**
+- RICO (66K Android UI screenshots, labeled)
+- WebUI (~20K web screenshots)
+- Self-captured via auto-annotation (AT-SPI2/UIA → free ground-truth labels)
+
+**Auto-annotation pipeline (`tools/vision/auto_annotate.py`):**
+Run on real apps → AT-SPI2/UIA provides element bounding boxes for free →
+converts to YOLO label format → thousands of labeled samples, zero human effort.
+
+### 16.4 OCR Integration
+
+After YOLO detects WHERE elements are, a tiny CRNN reads their text:
+- CRNN (Convolutional Recurrent Neural Network): ~2MB, ~2ms per crop
+- Or: combined YOLO + text recognition head (one model, one pass): ~8MB total
+- **Not** Tesseract (too heavy for inline use)
+
+Pipeline:
+```
+Screenshot → YOLO-UI → [(type, bbox, conf)] → crop each → CRNN → text
+Match: user query text vs. detected element texts → best match by similarity + type
+```
+
+### 16.5 CLIP Semantic Layer (optional)
+
+For natural-language queries like `see "the close button at top right"`:
+
+- CLIP text encoder: user query → embedding
+- CLIP image encoder: each detected element crop → embedding
+- Cosine similarity → best semantic match
+- Spatial filter: "top right" / "bottom" / etc. parsed from query
+
+CLIP text encoder INT8: ~15MB. Installed via `syn install clip-ui`.
+
+### 16.6 Codebase Layout
+
+```
+src/vision/
+├── vision.h               ← VisionEngine public interface
+├── native/
+│   ├── atspi.cpp          ← Linux AT-SPI2 (libatspi)
+│   └── uia.cpp            ← Windows UI Automation (COM)
+├── yolo_ui/
+│   ├── yolo_ui.cpp        ← ONNX inference wrapper
+│   ├── ocr.cpp            ← CRNN text recognition
+│   └── matcher.cpp        ← text + spatial matching logic
+├── clip/
+│   └── clip_match.cpp     ← semantic matching (optional)
+└── models/
+    ├── yolo_ui_int8.onnx  ← ships with syn
+    └── crnn_text.onnx     ← ships with syn
+
+tools/vision/
+├── auto_annotate.py       ← AT-SPI2/UIA → YOLO labels (training data)
+├── train_yolo_ui.py       ← YOLOv8n fine-tuning pipeline
+└── validate.py            ← benchmark on held-out screenshots
+```
+
+### 16.7 Phase Placement
+
+Added as **Phase 6.6** (after RAT, before Package Manager):
+
+| Step | Work |
+|---|---|
+| 6.6.1 | `tools/vision/auto_annotate.py` — AT-SPI2/UIA → YOLO labels |
+| 6.6.2 | Collect + auto-label training data (Linux + Windows) |
+| 6.6.3 | Fine-tune YOLOv8n → `yolo_ui.onnx`, INT8 quantize |
+| 6.6.4 | Train CRNN text recognition head |
+| 6.6.5 | `src/vision/native/atspi.cpp` — AT-SPI2 backend |
+| 6.6.6 | `src/vision/yolo_ui/` — ONNX inference + OCR + matcher |
+| 6.6.7 | Wire `tap` / `find` / `see` commands into automation layer |
+| 6.6.8 | `in "AppName" { }` scope block |
+| 6.6.9 | Predicates: `exists`, `enabled`, `checked` |
+| 6.6.10 | Conformance tests against mock vision backend |
+| 6.6.11 | Benchmark: `tap` end-to-end < 20ms on CPU |
