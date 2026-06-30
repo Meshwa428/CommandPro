@@ -1,0 +1,39 @@
+fn sift_down(a, i, n) {
+    while true {
+        let largest = i
+        let l = 2 * i + 1
+        let r = 2 * i + 2
+        if l < n {
+            if a[l] > a[largest] { largest = l }
+        }
+        if r < n {
+            if a[r] > a[largest] { largest = r }
+        }
+        if largest == i { return none }
+        let tmp = a[i]
+        a[i] = a[largest]
+        a[largest] = tmp
+        i = largest
+    }
+}
+fn heapsort(a) {
+    let n = len(a)
+    let i = n // 2 - 1
+    while i >= 0 { sift_down(a, i, n); i = i - 1 }
+    let end = n - 1
+    while end > 0 {
+        let tmp = a[0]
+        a[0] = a[end]
+        a[end] = tmp
+        sift_down(a, 0, end)
+        end = end - 1
+    }
+}
+let lst = []
+let seed = 55555
+for i = 0 to 100000 {
+    seed = (seed * 1664525 + 1013904223) % 4294967296
+    append(lst, seed % 100000)
+}
+heapsort(lst)
+print(lst[50000])

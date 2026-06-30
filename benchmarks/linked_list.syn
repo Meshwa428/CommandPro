@@ -1,0 +1,17 @@
+let n = 50000
+let head = {"val": 0, "nxt": none}
+let cur = head
+let i = 1
+while i < n {
+    let node = {"val": i, "nxt": none}
+    cur["nxt"] = node
+    cur = node
+    i = i + 1
+}
+let total = 0
+cur = head
+while cur != none {
+    total = total + cur["val"]
+    cur = cur["nxt"]
+}
+print(total)

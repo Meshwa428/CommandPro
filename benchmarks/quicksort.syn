@@ -1,0 +1,26 @@
+fn qsort(lst, lo, hi) {
+    if lo >= hi { return none }
+    let pivot = lst[hi]
+    let i = lo
+    for j = lo to hi {
+        if lst[j] <= pivot {
+            let tmp = lst[i]
+            lst[i] = lst[j]
+            lst[j] = tmp
+            i = i + 1
+        }
+    }
+    let tmp = lst[i]
+    lst[i] = lst[hi]
+    lst[hi] = tmp
+    qsort(lst, lo, i - 1)
+    qsort(lst, i + 1, hi)
+}
+let lst = []
+let x = 12345
+for i = 0 to 10000 {
+    x = (x * 1103515245 + 12345) % 2147483647
+    lst.append(x % 10000)
+}
+qsort(lst, 0, len(lst) - 1)
+print(lst[5000])

@@ -1,0 +1,20 @@
+let n = 5000
+let m = {}
+let seed = 99991
+let i = 0
+while i < n {
+    seed = (seed * 1664525 + 1013904223) % 4294967296
+    let k = seed % n
+    m[k] = k * 2
+    i = i + 1
+}
+let total = 0
+i = 0
+while i < n {
+    seed = (seed * 1664525 + 1013904223) % 4294967296
+    let k = seed % n
+    let v = m[k]
+    if v != none { total = total + v }
+    i = i + 1
+}
+print(total)

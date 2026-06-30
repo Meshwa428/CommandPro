@@ -1,0 +1,10 @@
+let lst = []
+for i = 0 to 100000 {
+    lst.append(i)
+}
+
+let total = 0
+for x in lst {
+    total = total + x
+}
+print(total)

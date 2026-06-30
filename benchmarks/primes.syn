@@ -1,0 +1,15 @@
+fn is_prime(n) {
+    if n < 2 { return false }
+    let i = 2
+    while i * i <= n {
+        if n % i == 0 { return false }
+        i = i + 1
+    }
+    return true
+}
+
+let count = 0
+for n = 2 to 50000 {
+    if is_prime(n) { count = count + 1 }
+}
+print(count)

@@ -64,7 +64,8 @@ private:
     
     // String interpolation state
     std::vector<InterpContext> m_interp_stack;
-    int  m_brace_level = 0;
+    int  m_brace_level = 0;  // tracks {} — NOT used for newline suppression
+    int  m_paren_level = 0;  // tracks () and [] — newlines suppressed when > 0
     bool m_resume_string = false;
     bool m_expect_interp_open = false;
     bool m_expect_string_end = false;

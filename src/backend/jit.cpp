@@ -2309,6 +2309,269 @@ static void emit_list_fn(const FnDeclStmt* fn, const std::vector<LFnParam>& para
     o << "}\n\n";
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// Generic value-typed JIT (HotSpot-style): compiles arbitrary functions that
+// the int/float/list specializers reject (tuples, recursion over heap values).
+// Everything is a NaN-boxed uint64_t; dynamic ops go through syn_rt_* helpers.
+// Aggressive bail-out: any unsupported construct => function not value-JIT'd,
+// runs in the interpreter (correctness preserved).
+// ════════════════════════════════════════════════════════════════════════════
+
+// ---- Analysis: is expr/stmt within the supported value-JIT subset? ----
+static bool vjit_expr_ok(const ExprNode* e, const VarSet& vfns);
+
+static bool vjit_call_ok(const CallExpr* c, const VarSet& vfns)
+{
+    auto* id = dynamic_cast<const IdentExpr*>(c->callee.get());
+    if (!id || !vfns.count(id->name)) return false;   // only calls to value-JIT fns
+    for (auto& a : c->args) if (!vjit_expr_ok(a.value.get(), vfns)) return false;
+    return true;
+}
+
+static bool vjit_expr_ok(const ExprNode* e, const VarSet& vfns)
+{
+    if (!e) return false;
+    if (dynamic_cast<const IntLitExpr*>(e))   return true;
+    if (dynamic_cast<const FloatLitExpr*>(e)) return true;
+    if (dynamic_cast<const BoolLitExpr*>(e))  return true;
+    if (dynamic_cast<const NoneLitExpr*>(e))  return true;
+    if (dynamic_cast<const IdentExpr*>(e))    return true;
+    if (auto* u = dynamic_cast<const UnaryExpr*>(e)) {
+        if (u->op != TokenKind::Minus && u->op != TokenKind::Not) return false;
+        return vjit_expr_ok(u->operand.get(), vfns);
+    }
+    if (auto* b = dynamic_cast<const BinaryExpr*>(e)) {
+        using TK = TokenKind;
+        switch (b->op) {
+        case TK::Plus: case TK::Minus: case TK::Star: case TK::Slash:
+        case TK::SlashSlash: case TK::Percent: case TK::StarStar:
+        case TK::EqEq: case TK::BangEq: case TK::Lt: case TK::LtEq:
+        case TK::Gt: case TK::GtEq: case TK::And: case TK::Or:
+            return vjit_expr_ok(b->left.get(), vfns) && vjit_expr_ok(b->right.get(), vfns);
+        default: return false;
+        }
+    }
+    if (auto* ix = dynamic_cast<const IndexExpr*>(e))
+        return vjit_expr_ok(ix->object.get(), vfns) && vjit_expr_ok(ix->index.get(), vfns);
+    if (auto* t = dynamic_cast<const TupleExpr*>(e)) {
+        for (auto& el : t->elements) if (!vjit_expr_ok(el.get(), vfns)) return false;
+        return true;
+    }
+    if (auto* c = dynamic_cast<const CallExpr*>(e)) return vjit_call_ok(c, vfns);
+    return false;
+}
+
+static bool vjit_block_ok(const Block& b, const VarSet& vfns);
+
+static bool vjit_stmt_ok(const StmtNode* s, const VarSet& vfns)
+{
+    if (auto* l = dynamic_cast<const LetStmt*>(s)) {
+        if (l->bind_kind != LetBindKind::Simple || l->names.size() != 1 ||
+            l->values.size() != 1) return false;
+        return vjit_expr_ok(l->values[0].get(), vfns);
+    }
+    if (auto* r = dynamic_cast<const ReturnStmt*>(s)) {
+        if (r->values.empty()) return true;
+        if (r->values.size() != 1) return false;
+        return vjit_expr_ok(r->values[0].get(), vfns);
+    }
+    if (auto* f = dynamic_cast<const IfStmt*>(s)) {
+        for (auto& br : f->branches) {
+            if (br.cond && !vjit_expr_ok(br.cond.get(), vfns)) return false;
+            if (!vjit_block_ok(br.body, vfns)) return false;
+        }
+        return true;
+    }
+    if (auto* es = dynamic_cast<const ExprStmt*>(s))
+        return vjit_expr_ok(es->expr.get(), vfns);
+    return false;
+}
+
+static bool vjit_block_ok(const Block& b, const VarSet& vfns)
+{
+    for (auto& s : b) if (!vjit_stmt_ok(s.get(), vfns)) return false;
+    return true;
+}
+
+// Fixpoint: a function is value-JIT-able if its whole body is in-subset given
+// that its (mutually recursive) callees are also value-JIT-able.
+static VarSet find_value_fns(const std::vector<const FnDeclStmt*>& fns,
+                             const VarSet& ifns, const VarSet& ffns)
+{
+    VarSet result;
+    for (auto* fn : fns)                          // seed with everything not already specialized
+        if (!ifns.count(fn->name) && !ffns.count(fn->name))
+            result.insert(fn->name);
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (auto* fn : fns) {
+            if (!result.count(fn->name)) continue;
+            if (!vjit_block_ok(fn->body, result)) { result.erase(fn->name); changed = true; }
+        }
+    }
+    return result;
+}
+
+// ---- Codegen ----
+struct VJitCtx {
+    std::ostream& o;
+    int& tmp;                       // unique temp counter
+    const VarSet& vfns;
+};
+
+// Emit expression, return the name of a C variable/expression holding its Value.
+static std::string vjit_emit(const ExprNode* e, VJitCtx& c, int ind)
+{
+    std::string sp(ind * 4, ' ');
+    auto fresh = [&]() { return "_t" + std::to_string(c.tmp++); };
+
+    if (auto* n = dynamic_cast<const IntLitExpr*>(e)) {
+        std::string t = fresh();
+        c.o << sp << "uint64_t " << t << " = syn_from_int(" << n->value << "LL);\n";
+        return t;
+    }
+    if (auto* n = dynamic_cast<const FloatLitExpr*>(e)) {
+        std::string t = fresh(); char buf[40];
+        snprintf(buf, sizeof(buf), "%.17g", n->value);
+        c.o << sp << "uint64_t " << t << " = syn_from_float(" << buf << ");\n";
+        return t;
+    }
+    if (auto* n = dynamic_cast<const BoolLitExpr*>(e)) {
+        std::string t = fresh();
+        c.o << sp << "uint64_t " << t << " = " << (n->value ? "VAL_TRUE" : "VAL_FALSE") << ";\n";
+        return t;
+    }
+    if (dynamic_cast<const NoneLitExpr*>(e)) {
+        std::string t = fresh();
+        c.o << sp << "uint64_t " << t << " = syn_none_val();\n";
+        return t;
+    }
+    if (auto* n = dynamic_cast<const IdentExpr*>(e)) {
+        return "_v_" + n->name;   // param/local (declared elsewhere)
+    }
+    if (auto* u = dynamic_cast<const UnaryExpr*>(e)) {
+        std::string a = vjit_emit(u->operand.get(), c, ind);
+        std::string t = fresh();
+        if (u->op == TokenKind::Minus)
+            c.o << sp << "uint64_t " << t << " = syn_rt_sub(syn_from_int(0LL), " << a << ");\n";
+        else // Not
+            c.o << sp << "uint64_t " << t << " = syn_rt_truthy(" << a << ") ? VAL_FALSE : VAL_TRUE;\n";
+        return t;
+    }
+    if (auto* b = dynamic_cast<const BinaryExpr*>(e)) {
+        using TK = TokenKind;
+        if (b->op == TK::And || b->op == TK::Or) {
+            // short-circuit: emit into a result temp
+            std::string t = fresh();
+            std::string l = vjit_emit(b->left.get(), c, ind);
+            c.o << sp << "uint64_t " << t << " = " << l << ";\n";
+            c.o << sp << "if (" << (b->op == TK::Or ? "!" : "") << "syn_rt_truthy(" << t << ")) {\n";
+            std::string r = vjit_emit(b->right.get(), c, ind + 1);
+            c.o << sp << "    " << t << " = " << r << ";\n";
+            c.o << sp << "}\n";
+            return t;
+        }
+        std::string l = vjit_emit(b->left.get(), c, ind);
+        std::string r = vjit_emit(b->right.get(), c, ind);
+        const char* fn = nullptr;
+        switch (b->op) {
+        case TK::Plus: fn="syn_rt_add"; break; case TK::Minus: fn="syn_rt_sub"; break;
+        case TK::Star: fn="syn_rt_mul"; break; case TK::Slash: fn="syn_rt_div"; break;
+        case TK::SlashSlash: fn="syn_rt_idiv"; break; case TK::Percent: fn="syn_rt_mod"; break;
+        case TK::StarStar: fn="syn_rt_pow"; break;
+        case TK::EqEq: fn="syn_rt_eq"; break; case TK::BangEq: fn="syn_rt_neq"; break;
+        case TK::Lt: fn="syn_rt_lt"; break; case TK::LtEq: fn="syn_rt_lte"; break;
+        case TK::Gt: fn="syn_rt_gt"; break; case TK::GtEq: fn="syn_rt_gte"; break;
+        default: fn="syn_rt_add"; break;
+        }
+        std::string t = fresh();
+        c.o << sp << "uint64_t " << t << " = " << fn << "(" << l << ", " << r << ");\n";
+        return t;
+    }
+    if (auto* ix = dynamic_cast<const IndexExpr*>(e)) {
+        std::string ob = vjit_emit(ix->object.get(), c, ind);
+        std::string k  = vjit_emit(ix->index.get(), c, ind);
+        std::string t = fresh();
+        c.o << sp << "uint64_t " << t << " = syn_rt_index(" << ob << ", " << k << ");\n";
+        return t;
+    }
+    if (auto* tup = dynamic_cast<const TupleExpr*>(e)) {
+        std::vector<std::string> els;
+        for (auto& el : tup->elements) els.push_back(vjit_emit(el.get(), c, ind));
+        std::string arr = fresh(), t = fresh();
+        c.o << sp << "uint64_t " << arr << "[] = {";
+        for (size_t i = 0; i < els.size(); ++i) { if (i) c.o << ", "; c.o << els[i]; }
+        c.o << "};\n";
+        c.o << sp << "uint64_t " << t << " = syn_rt_tuple_new(" << arr << ", "
+            << els.size() << ");\n";
+        return t;
+    }
+    if (auto* call = dynamic_cast<const CallExpr*>(e)) {
+        auto* id = static_cast<const IdentExpr*>(call->callee.get());
+        std::vector<std::string> as;
+        for (auto& a : call->args) as.push_back(vjit_emit(a.value.get(), c, ind));
+        std::string t = fresh();
+        c.o << sp << "uint64_t " << t << " = _jitv_" << id->name << "(";
+        for (size_t i = 0; i < as.size(); ++i) { if (i) c.o << ", "; c.o << as[i]; }
+        c.o << ");\n";
+        return t;
+    }
+    // unreachable (analysis guarantees subset)
+    std::string t = fresh();
+    c.o << sp << "uint64_t " << t << " = syn_none_val();\n";
+    return t;
+}
+
+static void vjit_emit_block(const Block& b, VJitCtx& c, int ind);
+
+static void vjit_emit_stmt(const StmtNode* s, VJitCtx& c, int ind)
+{
+    std::string sp(ind * 4, ' ');
+    if (auto* l = dynamic_cast<const LetStmt*>(s)) {
+        std::string v = vjit_emit(l->values[0].get(), c, ind);
+        c.o << sp << "uint64_t _v_" << l->names[0] << " = " << v << ";\n";
+        return;
+    }
+    if (auto* r = dynamic_cast<const ReturnStmt*>(s)) {
+        if (r->values.empty()) { c.o << sp << "return syn_none_val();\n"; return; }
+        std::string v = vjit_emit(r->values[0].get(), c, ind);
+        c.o << sp << "return " << v << ";\n";
+        return;
+    }
+    if (auto* f = dynamic_cast<const IfStmt*>(s)) {
+        // Emit as nested if/else so each elif condition's temp sits inside the
+        // preceding else block (C has no clean "else if" with a setup stmt).
+        std::function<void(size_t,int)> emit_branch = [&](size_t bi, int bind) {
+            std::string bsp(bind * 4, ' ');
+            const auto& br = f->branches[bi];
+            if (!br.cond) { vjit_emit_block(br.body, c, bind); return; }
+            std::string cnd = vjit_emit(br.cond.get(), c, bind);
+            c.o << bsp << "if (syn_rt_truthy(" << cnd << ")) {\n";
+            vjit_emit_block(br.body, c, bind + 1);
+            c.o << bsp << "}";
+            if (bi + 1 < f->branches.size()) {
+                c.o << " else {\n";
+                emit_branch(bi + 1, bind + 1);
+                c.o << bsp << "}\n";
+            } else {
+                c.o << "\n";
+            }
+        };
+        if (!f->branches.empty()) emit_branch(0, ind);
+        return;
+    }
+    if (auto* es = dynamic_cast<const ExprStmt*>(s)) {
+        vjit_emit(es->expr.get(), c, ind);  // emitted for side effects; result unused
+        return;
+    }
+}
+
+static void vjit_emit_block(const Block& b, VJitCtx& c, int ind)
+{
+    for (auto& s : b) vjit_emit_stmt(s.get(), c, ind);
+}
+
 // ── Source generation ─────────────────────────────────────────────────────────
 
 static std::string generate_c(const std::vector<const FnDeclStmt*>& fns,
@@ -2340,6 +2603,19 @@ static inline int64_t syn_as_int(Value v) {
 static inline Value syn_from_float(double d) { Value v; memcpy(&v, &d, 8); return v; }
 static inline double syn_as_float(Value v)   { double d; memcpy(&d, &v, 8); return d; }
 static inline Value syn_none_val() { return VNAN_BASE | ((uint64_t)3<<48); }
+#define VAL_TRUE  (VNAN_BASE | ((uint64_t)1<<48))
+#define VAL_FALSE (VNAN_BASE | ((uint64_t)2<<48))
+// Generic value-JIT runtime helpers (resolved against the syn executable).
+extern uint64_t syn_rt_add(uint64_t,uint64_t);  extern uint64_t syn_rt_sub(uint64_t,uint64_t);
+extern uint64_t syn_rt_mul(uint64_t,uint64_t);  extern uint64_t syn_rt_div(uint64_t,uint64_t);
+extern uint64_t syn_rt_idiv(uint64_t,uint64_t); extern uint64_t syn_rt_mod(uint64_t,uint64_t);
+extern uint64_t syn_rt_pow(uint64_t,uint64_t);  extern uint64_t syn_rt_eq(uint64_t,uint64_t);
+extern uint64_t syn_rt_neq(uint64_t,uint64_t);  extern uint64_t syn_rt_lt(uint64_t,uint64_t);
+extern uint64_t syn_rt_lte(uint64_t,uint64_t);  extern uint64_t syn_rt_gt(uint64_t,uint64_t);
+extern uint64_t syn_rt_gte(uint64_t,uint64_t);  extern int      syn_rt_truthy(uint64_t);
+extern uint64_t syn_rt_tuple_new(const uint64_t*,int);
+extern uint64_t syn_rt_list_new(const uint64_t*,int);
+extern uint64_t syn_rt_index(uint64_t,uint64_t);
 
 static inline int64_t syn_idiv(int64_t a, int64_t b) {
     if (!b) return 0;
@@ -2420,6 +2696,45 @@ static inline int64_t syn_ipow(int64_t base, int64_t exp) {
         o << ") {\n";
         emit_float_block(fn->body, o, ffns, 1);
         o << "    return 0.0;\n}\n\n";
+    }
+
+    // ── Generic value-typed functions ──
+    VarSet vfns = find_value_fns(fns, ifns, ffns);
+    if (!vfns.empty()) {
+        // forward decls
+        for (auto* fn : fns) {
+            if (!vfns.count(fn->name)) continue;
+            o << "static Value _jitv_" << fn->name << "(";
+            for (size_t i = 0; i < fn->params.size(); ++i) {
+                if (i) o << ","; o << "Value _v_" << fn->params[i].name;
+            }
+            o << ");\n";
+        }
+        o << "\n";
+        // bodies
+        for (auto* fn : fns) {
+            if (!vfns.count(fn->name)) continue;
+            o << "static Value _jitv_" << fn->name << "(";
+            for (size_t i = 0; i < fn->params.size(); ++i) {
+                if (i) o << ","; o << "Value _v_" << fn->params[i].name;
+            }
+            o << ") {\n";
+            int tmp = 0;
+            VJitCtx ctx{o, tmp, vfns};
+            vjit_emit_block(fn->body, ctx, 1);
+            o << "    return syn_none_val();\n}\n\n";
+        }
+        // public wrappers
+        for (auto* fn : fns) {
+            if (!vfns.count(fn->name)) continue;
+            o << "Value syn_jitv_" << fn->name << "(int nargs, Value* args) {\n";
+            o << "    return _jitv_" << fn->name << "(";
+            for (size_t i = 0; i < fn->params.size(); ++i) {
+                if (i) o << ",";
+                o << "nargs>" << (int)i << "?args[" << (int)i << "]:syn_none_val()";
+            }
+            o << ");\n}\n\n";
+        }
     }
 
     // Public wrappers for named functions.
@@ -2557,6 +2872,7 @@ static bool file_exists(const std::string& p)
     return stat(p.c_str(), &st) == 0;
 }
 
+
 JitModule* jit_compile(const Program& prog)
 {
     std::vector<const FnDeclStmt*> fns;
@@ -2630,7 +2946,8 @@ JitModule* jit_compile(const Program& prog)
         }
     }
 
-    if (ifns.empty() && ffns.empty() && !main_int && !main_float && !main_mixed && !main_list)
+    if (ifns.empty() && ffns.empty() && !main_int && !main_float && !main_mixed && !main_list
+        && find_value_fns(fns, ifns, ffns).empty())
         return nullptr;
 
     const Block* main_stmts = (main_int || main_float || main_mixed || main_list) ? &prog.stmts : nullptr;
@@ -2665,6 +2982,8 @@ JitModule* jit_compile(const Program& prog)
         mod->fns[name].int_fn = reinterpret_cast<JitIntFn>(load_sym("syn_jit_i_" + name));
     for (auto& name : ffns)
         mod->fns[name].float_fn = reinterpret_cast<JitFloatFn>(load_sym("syn_jit_f_" + name));
+    for (auto& name : find_value_fns(fns, ifns, ffns))
+        mod->fns[name].value_fn = reinterpret_cast<JitValueFn>(load_sym("syn_jitv_" + name));
     if (main_int)
         mod->fns["__main__"].main_fn = reinterpret_cast<JitMainFn>(load_sym("syn_jit_i___main__"));
     if (main_float)
@@ -2675,7 +2994,7 @@ JitModule* jit_compile(const Program& prog)
         mod->fns["__main__"].main_fn = reinterpret_cast<JitMainFn>(load_sym("syn_jit_l___main__"));
 
     bool any = false;
-    for (auto& [n, e] : mod->fns) if (e.int_fn || e.float_fn || e.main_fn) { any = true; break; }
+    for (auto& [n, e] : mod->fns) if (e.int_fn || e.float_fn || e.main_fn || e.value_fn) { any = true; break; }
     if (!any) { delete mod; return nullptr; }
     return mod;
 }

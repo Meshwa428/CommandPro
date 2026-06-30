@@ -1,0 +1,46 @@
+fn merge(a, lo, mid, hi) {
+    let lpart = []
+    let rpart = []
+    let i = lo
+    while i < mid { append(lpart, a[i]); i = i + 1 }
+    let j = mid
+    while j < hi { append(rpart, a[j]); j = j + 1 }
+    let li = 0
+    let ri = 0
+    let k = lo
+    while li < len(lpart) {
+        if ri >= len(rpart) {
+            a[k] = lpart[li]
+            li = li + 1
+        } else {
+            if lpart[li] <= rpart[ri] {
+                a[k] = lpart[li]
+                li = li + 1
+            } else {
+                a[k] = rpart[ri]
+                ri = ri + 1
+            }
+        }
+        k = k + 1
+    }
+    while ri < len(rpart) {
+        a[k] = rpart[ri]
+        ri = ri + 1
+        k = k + 1
+    }
+}
+fn msort(a, lo, hi) {
+    if hi - lo <= 1 { return none }
+    let mid = (lo + hi) // 2
+    msort(a, lo, mid)
+    msort(a, mid, hi)
+    merge(a, lo, mid, hi)
+}
+let lst = []
+let seed = 98765
+for i = 0 to 10000 {
+    seed = (seed * 1664525 + 1013904223) % 4294967296
+    append(lst, seed % 10000)
+}
+msort(lst, 0, len(lst))
+print(lst[5000])

@@ -1019,6 +1019,12 @@ Value VM::run_frame(CallFrame& outer_frame)
                     cl->jit_cache = je;
                 }
                 if (reinterpret_cast<uintptr_t>(je) > 1) {
+                    if (je->value_fn) {
+                        // Generic value JIT: handles any arg types natively.
+                        Value r = je->value_fn(nargs, &REGS[a + 1]);
+                        if (nret > 0) REGS[a] = r;
+                        break;
+                    }
                     if (je->int_fn) {
                         bool ok = true;
                         for (int i = 0; i < nargs && ok; ++i)

@@ -1,0 +1,7 @@
+fn apply_sum(f, n) {
+    let total = 0
+    for i = 0 to n { total = total + f(i) }
+    return total
+}
+fn square(x) { return x * x }
+print(apply_sum(square, 1000000))

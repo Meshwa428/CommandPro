@@ -1,0 +1,27 @@
+let m = 500
+let n = 480
+let a = []
+let b = []
+for i = 0 to m { append(a, i % 26) }
+for i = 0 to n { append(b, (i * 3 + 7) % 26) }
+let w = n + 1
+let dp = []
+for k = 0 to (m + 1) * w { append(dp, 0) }
+for j = 0 to n + 1 { dp[j] = j }
+for i = 1 to m + 1 {
+    dp[i * w] = i
+    for j = 1 to n + 1 {
+        if a[i-1] == b[j-1] {
+            dp[i*w+j] = dp[(i-1)*w+(j-1)]
+        } else {
+            let del = dp[(i-1)*w+j]
+            let ins = dp[i*w+(j-1)]
+            let sub = dp[(i-1)*w+(j-1)]
+            let mn = del
+            if ins < mn { mn = ins }
+            if sub < mn { mn = sub }
+            dp[i*w+j] = mn + 1
+        }
+    }
+}
+print(dp[m*w+n])

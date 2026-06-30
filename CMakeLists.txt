@@ -50,13 +50,24 @@ add_library(libsynapse STATIC
     src/common/diag.cpp
     src/frontend/token.cpp
     src/frontend/lexer.cpp
+    src/frontend/parser.cpp
+    src/runtime/value.cpp
+    src/runtime/chunk.cpp
+    src/runtime/vm.cpp
+    src/compiler/compiler.cpp
+    src/backend/jit.cpp
 )
 target_include_directories(libsynapse PUBLIC include)
 target_compile_features(libsynapse PUBLIC cxx_std_20)
+target_link_libraries(libsynapse PUBLIC dl)
 
 # ── CLI executable ────────────────────────────────────────────────────────────
-add_executable(syn src/main.cpp)
+# jit_runtime.cpp is compiled into the executable (not libsynapse) so its
+# syn_rt_* symbols are present in the dynamic symbol table and resolvable by
+# dlopened JIT modules. ENABLE_EXPORTS adds -rdynamic / --export-dynamic.
+add_executable(syn src/main.cpp src/backend/jit_runtime.cpp)
 target_link_libraries(syn PRIVATE libsynapse)
+set_target_properties(syn PROPERTIES ENABLE_EXPORTS ON)
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 enable_testing()

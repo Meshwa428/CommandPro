@@ -1,0 +1,11 @@
+let words = "the quick brown fox jumps over the lazy dog".split(" ")
+let n = 100000
+let count = 0
+for i = 0 to n {
+    let s = "-".join(words)
+    if s.starts_with("the") { count = count + 1 }
+    if s.ends_with("dog") { count = count + 1 }
+    let u = s.upper()
+    if u.find("FOX") >= 0 { count = count + 1 }
+}
+print(count)

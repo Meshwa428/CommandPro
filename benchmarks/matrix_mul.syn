@@ -1,0 +1,21 @@
+fn make_mat(n) {
+    let m = []
+    for i = 0 to n {
+        let row = []
+        for j = 0 to n { row.append(i * n + j) }
+        m.append(row)
+    }
+    return m
+}
+let n = 40
+let a = make_mat(n)
+let b = make_mat(n)
+let c = make_mat(n)
+for i = 0 to n {
+    for j = 0 to n {
+        let s = 0
+        for k = 0 to n { s = s + a[i][k] * b[k][j] }
+        c[i][j] = s
+    }
+}
+print(c[n-1][n-1])

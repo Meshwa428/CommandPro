@@ -103,7 +103,7 @@ Token Lexer::next_token()
 
     // Significant newline handling
     if (c == '\n') {
-        bool discard = (m_brace_level > 0); 
+        bool discard = (m_paren_level > 0);  // suppress inside () and [] only
         if (discard || m_last_was_term) {
             m_last_was_term = true;
             return next_token(); // skip
@@ -498,10 +498,10 @@ Token Lexer::lex_operator(std::size_t start)
         case ',': return make(TokenKind::Comma, start);
         case ':': return make(TokenKind::Colon, start);
         case ';': return make(TokenKind::Semicolon, start);
-        case '(': return make(TokenKind::LParen, start);
-        case ')': return make(TokenKind::RParen, start);
-        case '[': return make(TokenKind::LBracket, start);
-        case ']': return make(TokenKind::RBracket, start);
+        case '(': m_paren_level++; return make(TokenKind::LParen, start);
+        case ')': if (m_paren_level > 0) m_paren_level--; return make(TokenKind::RParen, start);
+        case '[': m_paren_level++; return make(TokenKind::LBracket, start);
+        case ']': if (m_paren_level > 0) m_paren_level--; return make(TokenKind::RBracket, start);
         case '_': return make(TokenKind::Wildcard, start);
 
         case '{': {

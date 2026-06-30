@@ -1,0 +1,52 @@
+fn A(i, j) {
+    let ij = i + j
+    return 1.0 / ((ij * (ij + 1) / 2 + i + 1))
+}
+fn av(v, u, n) {
+    let i = 0
+    while i < n {
+        let s = 0.0
+        let j = 0
+        while j < n {
+            s = s + A(i, j) * u[j]
+            j = j + 1
+        }
+        v[i] = s
+        i = i + 1
+    }
+}
+fn atv(v, u, n) {
+    let i = 0
+    while i < n {
+        let s = 0.0
+        let j = 0
+        while j < n {
+            s = s + A(j, i) * u[j]
+            j = j + 1
+        }
+        v[i] = s
+        i = i + 1
+    }
+}
+fn atav(out, tmp, v, n) {
+    av(tmp, v, n)
+    atv(out, tmp, n)
+}
+let n = 100
+let u = []
+let v = []
+let tmp = []
+for i = 0 to n { append(u, 1.0); append(v, 0.0); append(tmp, 0.0) }
+let iter = 0
+while iter < 10 {
+    atav(v, tmp, u, n)
+    atav(u, tmp, v, n)
+    iter = iter + 1
+}
+let vbv = 0.0
+let vv = 0.0
+for i = 0 to n {
+    vbv = vbv + u[i] * v[i]
+    vv = vv + v[i] * v[i]
+}
+print(sqrt(vbv / vv))

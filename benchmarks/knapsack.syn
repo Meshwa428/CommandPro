@@ -1,0 +1,29 @@
+let n = 200
+let cap = 2000
+let weights = []
+let values = []
+let seed = 42
+for i = 0 to n {
+    seed = (seed * 1664525 + 1013904223) % 4294967296
+    append(weights, seed % 50 + 1)
+    seed = (seed * 1664525 + 1013904223) % 4294967296
+    append(values, seed % 100 + 1)
+}
+let w = cap + 1
+let dp = []
+for k = 0 to (n + 1) * w { append(dp, 0) }
+for i = 1 to n + 1 {
+    let wi = weights[i-1]
+    let vi = values[i-1]
+    let base = (i-1) * w
+    let cur = i * w
+    for ww = 0 to cap + 1 {
+        let prev = dp[base + ww]
+        if wi <= ww {
+            let with_i = dp[base + ww - wi] + vi
+            if with_i > prev { prev = with_i }
+        }
+        dp[cur + ww] = prev
+    }
+}
+print(dp[n * w + cap])

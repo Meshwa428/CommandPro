@@ -1,0 +1,13 @@
+let seed = 1234567
+let inside = 0
+let n = 5000000
+let i = 0
+while i < n {
+    seed = (seed * 1664525 + 1013904223) % 4294967296
+    let x = seed / 4294967296.0
+    seed = (seed * 1664525 + 1013904223) % 4294967296
+    let y = seed / 4294967296.0
+    if x*x + y*y <= 1.0 { inside = inside + 1 }
+    i = i + 1
+}
+print(inside * 4.0 / n)

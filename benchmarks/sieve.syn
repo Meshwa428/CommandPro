@@ -1,0 +1,21 @@
+let n = 500000
+let sieve = []
+for i = 0 to n+1 { append(sieve, true) }
+sieve[0] = false
+sieve[1] = false
+let i = 2
+while i * i <= n {
+    if sieve[i] {
+        let j = i * i
+        while j <= n {
+            sieve[j] = false
+            j = j + i
+        }
+    }
+    i = i + 1
+}
+let count = 0
+for k = 0 to n+1 {
+    if sieve[k] { count = count + 1 }
+}
+print(count)
