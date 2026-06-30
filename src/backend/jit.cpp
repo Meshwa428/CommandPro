@@ -538,7 +538,12 @@ static void emit_int_expr(const ExprNode* e, std::ostream& o, const VarSet& ifns
         const char* op = nullptr;
         switch (n->op) {
         case TK::Plus: op="+"; break; case TK::Minus: op="-"; break;
-        case TK::Star: op="*"; break; default: o << "(0LL)"; return;
+        case TK::Star: op="*"; break;
+        // comparisons yield 0/1 in C — valid int-valued result
+        case TK::Lt: op="<"; break;   case TK::LtEq: op="<="; break;
+        case TK::Gt: op=">"; break;   case TK::GtEq: op=">="; break;
+        case TK::EqEq: op="=="; break; case TK::BangEq: op="!="; break;
+        default: o << "(0LL)"; return;
         }
         o << "("; emit_int_expr(n->left.get(), o, ifns, ctx);
         o << op; emit_int_expr(n->right.get(), o, ifns, ctx); o << ")"; return;
@@ -725,6 +730,9 @@ static void emit_float_expr(const ExprNode* e, std::ostream& o, const VarSet& ff
         switch (n->op) {
         case TokenKind::Plus:  op="+"; break; case TokenKind::Minus: op="-"; break;
         case TokenKind::Star:  op="*"; break; case TokenKind::Slash: op="/"; break;
+        case TokenKind::Lt: op="<"; break;   case TokenKind::LtEq: op="<="; break;
+        case TokenKind::Gt: op=">"; break;   case TokenKind::GtEq: op=">="; break;
+        case TokenKind::EqEq: op="=="; break; case TokenKind::BangEq: op="!="; break;
         default: o << "(0.0)"; return;
         }
         o << "("; emit_float_expr(n->left.get(), o, ffns);
@@ -913,7 +921,11 @@ static void emit_as_float(const ExprNode* e, std::ostream& o, const VTMap& vt,
         const char* op = nullptr;
         switch (n->op) {
         case TK::Plus: op="+"; break; case TK::Minus: op="-"; break;
-        case TK::Star: op="*"; break; default: o << "(0.0)"; return;
+        case TK::Star: op="*"; break;
+        case TK::Lt: op="<"; break;   case TK::LtEq: op="<="; break;
+        case TK::Gt: op=">"; break;   case TK::GtEq: op=">="; break;
+        case TK::EqEq: op="=="; break; case TK::BangEq: op="!="; break;
+        default: o << "(0.0)"; return;
         }
         o << "("; emit_as_float(n->left.get(), o, vt, ifns, ffns);
         o << op; emit_as_float(n->right.get(), o, vt, ifns, ffns); o << ")"; return;
@@ -981,7 +993,11 @@ static void emit_as_int(const ExprNode* e, std::ostream& o, const VTMap& vt,
         const char* op = nullptr;
         switch (n->op) {
         case TK::Plus: op="+"; break; case TK::Minus: op="-"; break;
-        case TK::Star: op="*"; break; default: o << "(0LL)"; return;
+        case TK::Star: op="*"; break;
+        case TK::Lt: op="<"; break;   case TK::LtEq: op="<="; break;
+        case TK::Gt: op=">"; break;   case TK::GtEq: op=">="; break;
+        case TK::EqEq: op="=="; break; case TK::BangEq: op="!="; break;
+        default: o << "(0LL)"; return;
         }
         o << "("; emit_as_int(n->left.get(), o, vt, ifns, ffns);
         o << op; emit_as_int(n->right.get(), o, vt, ifns, ffns); o << ")"; return;
@@ -1388,7 +1404,11 @@ static void emit_as_float_l(const ExprNode* e, std::ostream& o, const VTMap& vt,
         const char* op = nullptr;
         switch (n->op) {
         case TK::Plus: op="+"; break; case TK::Minus: op="-"; break;
-        case TK::Star: op="*"; break; default: o << "(0.0)"; return;
+        case TK::Star: op="*"; break;
+        case TK::Lt: op="<"; break;   case TK::LtEq: op="<="; break;
+        case TK::Gt: op=">"; break;   case TK::GtEq: op=">="; break;
+        case TK::EqEq: op="=="; break; case TK::BangEq: op="!="; break;
+        default: o << "(0.0)"; return;
         }
         o << "("; emit_as_float_l(n->left.get(), o, vt, lv, ifns, ffns);
         o << op; emit_as_float_l(n->right.get(), o, vt, lv, ifns, ffns); o << ")"; return;
@@ -1502,7 +1522,11 @@ static void emit_as_int_l(const ExprNode* e, std::ostream& o, const VTMap& vt, c
         const char* op = nullptr;
         switch (n->op) {
         case TK::Plus: op="+"; break; case TK::Minus: op="-"; break;
-        case TK::Star: op="*"; break; default: o << "(0LL)"; return;
+        case TK::Star: op="*"; break;
+        case TK::Lt: op="<"; break;   case TK::LtEq: op="<="; break;
+        case TK::Gt: op=">"; break;   case TK::GtEq: op=">="; break;
+        case TK::EqEq: op="=="; break; case TK::BangEq: op="!="; break;
+        default: o << "(0LL)"; return;
         }
         o << "("; emit_as_int_l(n->left.get(), o, vt, lv, ifns, ffns);
         o << op; emit_as_int_l(n->right.get(), o, vt, lv, ifns, ffns); o << ")"; return;
@@ -1868,7 +1892,11 @@ static bool check_list_stmt(const StmtNode* s, VTMap& vt, LVMap& lv,
                 }
             }
         }
-        if (!for_main) return true; // unknown stmt in function body: allow
+        // Unknown call/statement: the emitter cannot express it and would
+        // silently drop it (e.g. a call to a non-JIT-able function), producing
+        // wrong results. Reject so the whole function falls back to the
+        // interpreter. (The !for_main && !all_fns permissive case already
+        // returned true at the top of the ExprStmt branch.)
         return false;
     }
     if (dynamic_cast<const BreakStmt*>(s) || dynamic_cast<const ContinueStmt*>(s)) return true;
