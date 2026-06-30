@@ -719,8 +719,7 @@ Value VM::run_frame(CallFrame& outer_frame)
         case Op::NEW_LIST: {
             uint8_t a=INS_A(w), b=INS_B(w), n=INS_C(w);
             auto* list = alloc_list();
-            list->items.reserve(n);
-            for (int i = 0; i < n; ++i) list->items.push_back(REGS[b+i]);
+            list->items.assign(&REGS[b], &REGS[b] + n);  // bulk copy, one realloc
             REGS[a] = Value::from_ptr(list);
             break;
         }
@@ -735,7 +734,7 @@ Value VM::run_frame(CallFrame& outer_frame)
             uint8_t a=INS_A(w), b=INS_B(w), n=INS_C(w);
             auto* list = alloc_list();
             list->kind = ObjKind::Tuple;
-            for (int i = 0; i < n; ++i) list->items.push_back(REGS[b+i]);
+            list->items.assign(&REGS[b], &REGS[b] + n);  // bulk copy, one realloc
             REGS[a] = Value::from_ptr(list);
             break;
         }
