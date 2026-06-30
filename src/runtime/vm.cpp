@@ -700,12 +700,18 @@ Value VM::run_frame(CallFrame& outer_frame)
         }
         case Op::STR_LEN: {
             uint8_t a=INS_A(w),b=INS_B(w);
-            if (val_is_string(REGS[b]))
-                REGS[a] = Value::from_int(int64_t(as_str(REGS[b]).data.size()));
-            else if (val_is_list(REGS[b]))
-                REGS[a] = Value::from_int(int64_t(as_list(REGS[b]).items.size()));
-            else
-                throw std::runtime_error("len() on non-string/list");
+            Value v = REGS[b];
+            if (val_is_string(v))
+                REGS[a] = Value::from_int(int64_t(as_str(v).data.size()));
+            else if (v.is_ptr()) {
+                Obj* o = v.as_ptr();
+                if (o->kind == ObjKind::List || o->kind == ObjKind::Tuple)
+                    REGS[a] = Value::from_int(int64_t(static_cast<ObjList*>(o)->items.size()));
+                else if (o->kind == ObjKind::Map)
+                    REGS[a] = Value::from_int(int64_t(static_cast<ObjMap*>(o)->pairs.size()));
+                else throw std::runtime_error("len() on non-collection");
+            }
+            else throw std::runtime_error("len() on non-collection");
             break;
         }
 

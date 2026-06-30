@@ -810,6 +810,41 @@ int Compiler::compile_call(const CallExpr* e, int dest)
         return dest >= 0 ? dest : obj_reg;
     }
 
+    // Builtin fast-paths: len(x) -> STR_LEN, append(l, x) -> APPEND, bypassing
+    // the global lookup + std::function native-call overhead. Only when the
+    // name isn't shadowed by a local/upvalue binding.
+    if (auto* id = dynamic_cast<const IdentExpr*>(e->callee.get())) {
+        bool shadowed = resolve_local(id->name) >= 0 || resolve_upvalue(id->name) >= 0;
+        if (!shadowed && id->name == "len" && e->args.size() == 1) {
+            int r = dest < 0 ? alloc_reg() : dest;
+            bool t = false;
+            int src = compile_operand(e->args[0].value.get(), t);
+            emit(enc_R(Op::STR_LEN, uint8_t(r), uint8_t(src)));
+            if (t) free_reg();
+            return r;
+        }
+        if (!shadowed && id->name == "append" && e->args.size() == 2) {
+            // Capture the list reg first if the value arg has side effects
+            // (preserves left-to-right evaluation; see compile_binary).
+            bool lt = false;
+            int lreg;
+            if (expr_is_pure(e->args[1].value.get())) {
+                lreg = compile_operand(e->args[0].value.get(), lt);
+            } else {
+                lreg = alloc_reg(); compile_expr(e->args[0].value.get(), lreg); lt = true;
+            }
+            bool vt = false;
+            int vreg = compile_operand(e->args[1].value.get(), vt);
+            emit(enc_R(Op::APPEND, uint8_t(lreg), uint8_t(vreg)));
+            if (vt) free_reg();
+            if (lt) free_reg();
+            // append returns none (matches native)
+            int r = dest < 0 ? alloc_reg() : dest;
+            emit(enc_I(Op::LOAD_NONE, uint8_t(r), 0));
+            return r;
+        }
+    }
+
     // Layout: R[callee_reg]=callee, R[callee_reg+1..] = args.
     // After CALL, result sits in R[callee_reg].
     // We always free callee_reg after moving result to dest (or return it raw if dest=-1).
