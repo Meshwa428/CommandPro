@@ -1,0 +1,24 @@
+fn make_tree(depth) {
+    if depth == 0 { return (1, none, none) }
+    return (1, make_tree(depth - 1), make_tree(depth - 1))
+}
+fn check_tree(node) {
+    let l = node[1]
+    if l is none { return 1 }
+    return 1 + check_tree(l) + check_tree(node[2])
+}
+let max_depth = 12
+let total = 0
+let d = 4
+while d <= max_depth {
+    let iters = 1
+    let tmp = max_depth - d + 4
+    while tmp > 0 { iters = iters * 2; tmp = tmp - 1 }
+    let i = 0
+    while i < iters {
+        total = total + check_tree(make_tree(d))
+        i = i + 1
+    }
+    d = d + 2
+}
+print(total)
