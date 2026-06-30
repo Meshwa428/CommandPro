@@ -64,7 +64,7 @@ VM::~VM()
 
 ObjString* VM::alloc_string(const char* data, size_t len)
 {
-    ++m_alloc_count;
+    gc_point();
     ObjString* obj;
     if (m_str_pool) {
         obj = m_str_pool;
@@ -81,7 +81,7 @@ ObjString* VM::alloc_string(const char* data, size_t len)
 
 ObjString* VM::alloc_string_raw()
 {
-    ++m_alloc_count;
+    gc_point();
     ObjString* obj;
     if (m_str_pool) {
         obj = m_str_pool;
@@ -100,7 +100,7 @@ ObjString* VM::alloc_string_raw()
 
 ObjList* VM::alloc_list()
 {
-    ++m_alloc_count;
+    gc_point();
     ObjList* obj;
     if (m_list_pool) {
         obj = m_list_pool;
@@ -118,7 +118,7 @@ ObjList* VM::alloc_list()
 
 ObjMap* VM::alloc_map()
 {
-    ++m_alloc_count;
+    gc_point();
     ObjMap* obj;
     if (m_map_pool) {
         obj = m_map_pool;
@@ -508,11 +508,6 @@ Value VM::call_value(Value callee, int nargs, Value* args)
 
 // ── Main execution loop ───────────────────────────────────────────────────────
 
-// Computed goto dispatch — GCC/Clang extension
-#if defined(__GNUC__) || defined(__clang__)
-#  define DISPATCH_TABLE 1
-#endif
-
 Value VM::run_frame(CallFrame& outer_frame)
 {
     // entry_depth: return from C++ when frame stack drops below this
@@ -523,24 +518,14 @@ Value VM::run_frame(CallFrame& outer_frame)
     Value*     regs  = frame->regs;
     Chunk*     ck    = frame->chunk;
 
-
-#ifdef DISPATCH_TABLE
-    // Computed-goto dispatch table — fastest path
-    static const void* dispatch[] = {
-        // This table maps Op values (uint8_t) to labels.
-        // We fill it dynamically the first time through.
-        nullptr
-    };
-
-    // ponytail: fall back to switch — computed goto needs dense table setup;
-    // switch is easier to maintain and plenty fast with -O2 branch prediction.
-#endif
-
+    // ponytail: plain switch dispatch — GCC -O3 lowers the dense opcode enum to
+    // a jump table already; computed-goto adds BTB locality but a 256-entry
+    // label table for 85 sparse opcodes isn't worth the maintenance yet.
 #define NEXT_INS() (*pc++)
 #define REGS regs
 
     while (true) {
-        if (__builtin_expect(m_alloc_count >= m_gc_threshold, 0)) collect_garbage();
+        // GC now runs at allocation entry (VM::gc_point), not per instruction.
         uint64_t w = NEXT_INS();
         Op op = INS_OP(w);
 
@@ -640,7 +625,7 @@ Value VM::run_frame(CallFrame& outer_frame)
             REGS[a] = r;
             if (r.is_ptr()) { // new heap obj from string concat — register with GC
                 Obj* o = r.as_ptr(); o->gc_next = m_gc_list; m_gc_list = o;
-                ++m_alloc_count;
+                gc_point();  // r already in REGS[a] (rooted) → safe to collect
             }
             break;
         }

@@ -211,13 +211,13 @@ void Compiler::compile_if(const IfStmt* stmt)
         bool is_not = (bin->op == TokenKind::Not);
         if (!is_is && !is_not) return false;
         if (!dynamic_cast<const NoneLitExpr*>(bin->right.get())) return false;
-        int r = alloc_reg();
-        compile_expr(bin->left.get(), r);
+        bool t = false;
+        int r = compile_operand(bin->left.get(), t);  // local → read in place
         // JNIL=jump-if-nil skips body when expr IS nil; for "is none" we want
         // to skip when expr is NOT none → use JNNIL; "is not none" → JNIL.
         Op jop = is_not ? Op::JNIL : Op::JNNIL;
         jf_out = emit_jump(enc_RJ(jop, uint8_t(r), 0));
-        free_reg();
+        if (t) free_reg();
         return true;
     };
 
@@ -665,6 +665,31 @@ int Compiler::compile_ident(const IdentExpr* e, int dest)
     return r;
 }
 
+// True if evaluating `e` cannot mutate any variable (no calls/assignments).
+// Used to decide when an operand can be read from its own register in place
+// rather than copied to a temp first. Conservative: unknown nodes → not pure.
+static bool expr_is_pure(const ExprNode* e)
+{
+    if (!e) return true;
+    if (dynamic_cast<const IntLitExpr*>(e))   return true;
+    if (dynamic_cast<const FloatLitExpr*>(e)) return true;
+    if (dynamic_cast<const BoolLitExpr*>(e))  return true;
+    if (dynamic_cast<const NoneLitExpr*>(e))  return true;
+    if (dynamic_cast<const DurationLitExpr*>(e)) return true;
+    if (dynamic_cast<const StringLitExpr*>(e))   return true;
+    if (dynamic_cast<const IdentExpr*>(e))    return true;
+    if (auto* u = dynamic_cast<const UnaryExpr*>(e))  return expr_is_pure(u->operand.get());
+    if (auto* b = dynamic_cast<const BinaryExpr*>(e))
+        return expr_is_pure(b->left.get()) && expr_is_pure(b->right.get());
+    if (auto* i = dynamic_cast<const IndexExpr*>(e))
+        return expr_is_pure(i->object.get()) && expr_is_pure(i->index.get());
+    if (auto* f = dynamic_cast<const FieldExpr*>(e)) return expr_is_pure(f->object.get());
+    if (auto* t = dynamic_cast<const TernaryExpr*>(e))
+        return expr_is_pure(t->cond.get()) && expr_is_pure(t->value.get())
+            && expr_is_pure(t->else_val.get());
+    return false;  // CallExpr, interpolation, constructors, etc.
+}
+
 int Compiler::compile_binary(const BinaryExpr* e, int dest)
 {
     // Short-circuit for 'and'/'or'
@@ -685,12 +710,22 @@ int Compiler::compile_binary(const BinaryExpr* e, int dest)
         return r;
     }
 
-    // Allocate result first so it sits below the temps; free temps LIFO.
-    int r   = dest >= 0 ? dest : alloc_reg();
-    int lhs = alloc_reg();
-    compile_expr(e->left.get(), lhs);
-    int rhs = alloc_reg();
-    compile_expr(e->right.get(), rhs);
+    // Allocate result first so it sits below the temps.
+    int r = dest >= 0 ? dest : alloc_reg();
+    // Operand registers: prefer reading locals in place (no MOVE-to-temp).
+    // Left may read in place only if the right operand has no side effects
+    // (right is evaluated after left, must not clobber left's variable).
+    // Right may always read in place — it's evaluated last, matching semantics.
+    bool lt = false, rt = false;
+    int lhs, rhs;
+    if (expr_is_pure(e->right.get())) {
+        lhs = compile_operand(e->left.get(), lt);
+    } else {
+        lhs = alloc_reg(); compile_expr(e->left.get(), lhs); lt = true;
+    }
+    rhs = compile_operand(e->right.get(), rt);
+
+    auto done = [&](int) { if (rt) free_reg(); if (lt) free_reg(); return r; };
 
     Op op;
     switch (e->op) {
@@ -706,25 +741,20 @@ int Compiler::compile_binary(const BinaryExpr* e, int dest)
     case TokenKind::Lt:         op = Op::LT;   break;
     case TokenKind::LtEq:       op = Op::LTE;  break;
     case TokenKind::Gt:
-        emit(enc_R(Op::LT,  uint8_t(r), uint8_t(rhs), uint8_t(lhs)));
-        free_reg(); free_reg(); return r;
+        emit(enc_R(Op::LT,  uint8_t(r), uint8_t(rhs), uint8_t(lhs))); return done(0);
     case TokenKind::GtEq:
-        emit(enc_R(Op::LTE, uint8_t(r), uint8_t(rhs), uint8_t(lhs)));
-        free_reg(); free_reg(); return r;
+        emit(enc_R(Op::LTE, uint8_t(r), uint8_t(rhs), uint8_t(lhs))); return done(0);
     case TokenKind::QQ:         op = Op::NULLC; break;
     case TokenKind::Is:         op = Op::EQ;   break;
     case TokenKind::Not:        op = Op::NEQ;  break;  // 'not in' / 'is not'
     // 'in': HAS_KEY(r, rhs=container, lhs=element) — note swapped operands
     case TokenKind::In:
-        emit(enc_R(Op::HAS_KEY, uint8_t(r), uint8_t(rhs), uint8_t(lhs)));
-        free_reg(); free_reg(); return r;
+        emit(enc_R(Op::HAS_KEY, uint8_t(r), uint8_t(rhs), uint8_t(lhs))); return done(0);
     default:
-        emit(enc_I(Op::LOAD_NONE, uint8_t(r), 0));
-        free_reg(); free_reg(); return r;
+        emit(enc_I(Op::LOAD_NONE, uint8_t(r), 0)); return done(0);
     }
     emit(enc_R(op, uint8_t(r), uint8_t(lhs), uint8_t(rhs)));
-    free_reg(); free_reg(); // rhs, lhs (LIFO)
-    return r;
+    return done(0);
 }
 
 int Compiler::compile_unary(const UnaryExpr* e, int dest)
@@ -809,28 +839,28 @@ int Compiler::compile_call(const CallExpr* e, int dest)
 int Compiler::compile_index(const IndexExpr* e, int dest)
 {
     int r = dest < 0 ? alloc_reg() : dest;
-    int obj = alloc_reg();
-    compile_expr(e->object.get(), obj);
-    int idx = alloc_reg();
-    compile_expr(e->index.get(), idx);
+    bool ot = false, it = false;
+    int obj;
+    if (expr_is_pure(e->index.get())) {
+        obj = compile_operand(e->object.get(), ot);
+    } else {
+        obj = alloc_reg(); compile_expr(e->object.get(), obj); ot = true;
+    }
+    int idx = compile_operand(e->index.get(), it);
     emit(enc_R(Op::GET_FIELD, uint8_t(r), uint8_t(obj), uint8_t(idx)));
-    free_reg(); free_reg();
+    if (it) free_reg();
+    if (ot) free_reg();
     return r;
 }
 
 int Compiler::compile_field(const FieldExpr* e, int dest)
 {
     int r = dest < 0 ? alloc_reg() : dest;
-    int obj = alloc_reg();
-    compile_expr(e->object.get(), obj);
+    bool ot = false;
+    int obj = compile_operand(e->object.get(), ot);  // object read-only → in place ok
     uint16_t ki = add_str_const(e->field);
-    emit(enc_I(Op::GET_FIELDK, uint8_t(r), int64_t(ki)));
-    // encode obj in B bits
-    // GET_FIELDK: R[A] = R[B][K[imm]]; reuse RI format: A=dest, B=obj, imm=ki
-    // Fix: re-emit correctly
-    chunk().code.pop_back(); chunk().lines.pop_back(); // remove wrong emit
     emit(enc_RI(Op::GET_FIELDK, uint8_t(r), uint8_t(obj), int64_t(ki)));
-    free_reg();
+    if (ot) free_reg();
     return r;
 }
 
@@ -955,6 +985,19 @@ int Compiler::compile_match_expr(const MatchExpr* e, int dest)
 int Compiler::alloc_reg()
 {
     return m_current->reg_top++;
+}
+
+int Compiler::compile_operand(const ExprNode* e, bool& is_temp)
+{
+    // Local variable: read its register directly — skip the redundant MOVE-to-temp.
+    if (auto* id = dynamic_cast<const IdentExpr*>(e)) {
+        int local = resolve_local(id->name);
+        if (local >= 0) { is_temp = false; return local; }
+    }
+    int t = alloc_reg();
+    compile_expr(e, t);
+    is_temp = true;
+    return t;
 }
 
 void Compiler::free_reg(int n)
