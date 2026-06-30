@@ -59,6 +59,12 @@ VM::~VM()
         delete mp;
         mp = next;
     }
+    ObjInt* ip = m_int_pool;
+    while (ip) {
+        ObjInt* next = reinterpret_cast<ObjInt*>(ip->gc_next);
+        delete ip;
+        ip = next;
+    }
 }
 
 // ── String pool allocators ────────────────────────────────────────────────────
@@ -111,6 +117,23 @@ ObjList* VM::alloc_list()
         obj->items.clear();
     } else {
         obj = new ObjList();
+    }
+    obj->gc_next = m_gc_list;
+    m_gc_list = obj;
+    return obj;
+}
+
+ObjInt* VM::alloc_int(int64_t v)
+{
+    ++m_alloc_count;
+    ObjInt* obj;
+    if (m_int_pool) {
+        obj = m_int_pool;
+        m_int_pool = reinterpret_cast<ObjInt*>(obj->gc_next);
+        obj->gc_mark = false;
+        obj->value = v;
+    } else {
+        obj = new ObjInt(v);
     }
     obj->gc_next = m_gc_list;
     m_gc_list = obj;
@@ -237,12 +260,17 @@ void VM::collect_garbage()
                 m_map_pool = m;
                 break;
             }
+            case ObjKind::Int: {
+                auto* iv = static_cast<ObjInt*>(o);
+                iv->gc_next = m_int_pool;
+                m_int_pool = iv;
+                break;
+            }
             case ObjKind::Function: delete static_cast<ObjFunction*>(o); break;
             case ObjKind::Closure:  delete static_cast<ObjClosure*>(o);  break;
             case ObjKind::Upvalue:  delete static_cast<ObjUpvalue*>(o);  break;
             case ObjKind::Native:   delete static_cast<ObjNative*>(o);   break;
             case ObjKind::Error:    delete static_cast<ObjError*>(o);    break;
-            case ObjKind::Int:      delete static_cast<ObjInt*>(o);      break;
             default:                delete o; break;
             }
         }

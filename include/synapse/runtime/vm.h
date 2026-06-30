@@ -90,6 +90,12 @@ private:
     ObjString*  m_str_pool      = nullptr;
     ObjList*    m_list_pool     = nullptr;
     ObjMap*     m_map_pool      = nullptr;
+    ObjInt*     m_int_pool      = nullptr;
+public:
+    // Pooled large-int allocation (values outside signed 48-bit range). Without
+    // pooling, big-int arithmetic (e.g. RNG products) malloc/free per op.
+    ObjInt* alloc_int(int64_t v);
+private:
     // public so main.cpp can populate before run()
 public:
     std::unordered_map<std::string, JitEntry> m_jit;

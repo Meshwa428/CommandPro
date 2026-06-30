@@ -14,7 +14,7 @@ namespace syn {
 Value val_box_large_int(int64_t v)
 {
     ObjInt* o;
-    if (tls_vm) o = tls_vm->alloc<ObjInt>(v);
+    if (tls_vm) o = tls_vm->alloc_int(v);   // pooled
     else { o = new ObjInt(v); }  // outside VM (JIT __main__ path) — GC won't track this
     return {V_LARGEINT | (reinterpret_cast<uint64_t>(o) & VPAY_MASK)};
 }
