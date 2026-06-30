@@ -196,6 +196,19 @@ inline ObjMap&     as_map(Value v)     { return *static_cast<ObjMap*>(v.as_ptr()
 inline ObjClosure& as_closure(Value v) { return *static_cast<ObjClosure*>(v.as_ptr()); }
 inline ObjNative&  as_native(Value v)  { return *static_cast<ObjNative*>(v.as_ptr()); }
 
+// Inlined: called on every JF/JT/NOT. Fast paths (bool/none/int/float) avoid an
+// out-of-line call; string/list emptiness is the rare tail.
+inline bool Value::truthy() const
+{
+    if (raw == V_TRUE)  return true;
+    if (raw == V_FALSE || raw == V_NONE) return false;
+    if (is_int())   return as_int() != 0;
+    if (is_float()) { double d = as_float(); return d != 0.0 && d == d; }  // d==d: not NaN
+    if (val_is_string(*this)) return !as_str(*this).data.empty();
+    if (val_is_list(*this))   return !as_list(*this).items.empty();
+    return true;
+}
+
 // Thread-local current VM (set by VM::run; used by Value::from_int to alloc ObjInt)
 class VM;
 extern thread_local VM* tls_vm;

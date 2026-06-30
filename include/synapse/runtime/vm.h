@@ -44,18 +44,14 @@ public:
     size_t   m_alloc_count  = 0;
     size_t   m_gc_threshold = 1024;  // collect after this many allocations
 
-    // Collect at allocation entry: all live values are rooted in registers/
-    // frames at this point, and the object about to be created does not exist
-    // yet, so it cannot be wrongly swept. Lets the dispatch loop skip a
-    // per-instruction GC check.
-    inline void gc_point() {
-        if (__builtin_expect(++m_alloc_count >= m_gc_threshold, 0)) collect_garbage();
-    }
-
+    // GC runs only at the dispatch-loop top (instruction boundaries), where all
+    // live values are in registers/frames. Allocators must NOT collect mid-op:
+    // natives and multi-alloc opcodes hold freshly-made objects in C++ locals
+    // that are not GC roots, so collecting there would free them.
     template<typename T, typename... Args>
     T* alloc(Args&&... args)
     {
-        gc_point();
+        ++m_alloc_count;
         auto* obj = new T(std::forward<Args>(args)...);
         obj->gc_next = m_gc_list;
         m_gc_list = obj;

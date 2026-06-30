@@ -64,7 +64,7 @@ VM::~VM()
 
 ObjString* VM::alloc_string(const char* data, size_t len)
 {
-    gc_point();
+    ++m_alloc_count;
     ObjString* obj;
     if (m_str_pool) {
         obj = m_str_pool;
@@ -81,7 +81,7 @@ ObjString* VM::alloc_string(const char* data, size_t len)
 
 ObjString* VM::alloc_string_raw()
 {
-    gc_point();
+    ++m_alloc_count;
     ObjString* obj;
     if (m_str_pool) {
         obj = m_str_pool;
@@ -100,7 +100,7 @@ ObjString* VM::alloc_string_raw()
 
 ObjList* VM::alloc_list()
 {
-    gc_point();
+    ++m_alloc_count;
     ObjList* obj;
     if (m_list_pool) {
         obj = m_list_pool;
@@ -118,7 +118,7 @@ ObjList* VM::alloc_list()
 
 ObjMap* VM::alloc_map()
 {
-    gc_point();
+    ++m_alloc_count;
     ObjMap* obj;
     if (m_map_pool) {
         obj = m_map_pool;
@@ -525,7 +525,8 @@ Value VM::run_frame(CallFrame& outer_frame)
 #define REGS regs
 
     while (true) {
-        // GC now runs at allocation entry (VM::gc_point), not per instruction.
+        // GC at instruction boundary: all live values are settled in registers.
+        if (__builtin_expect(m_alloc_count >= m_gc_threshold, 0)) collect_garbage();
         uint64_t w = NEXT_INS();
         Op op = INS_OP(w);
 
@@ -625,7 +626,7 @@ Value VM::run_frame(CallFrame& outer_frame)
             REGS[a] = r;
             if (r.is_ptr()) { // new heap obj from string concat — register with GC
                 Obj* o = r.as_ptr(); o->gc_next = m_gc_list; m_gc_list = o;
-                gc_point();  // r already in REGS[a] (rooted) → safe to collect
+                ++m_alloc_count;
             }
             break;
         }

@@ -284,8 +284,10 @@ static syn::Value run_source(const std::string& path, const std::string& src,
     register_stdlib(vm);
 
     // JIT compile pure-int/float functions + top-level __main__ if possible
+    // SYN_NO_JIT set disables the JIT entirely (debugging / interpreter fallback).
+    static const bool no_jit = std::getenv("SYN_NO_JIT") != nullptr;
     static std::unique_ptr<syn::JitModule> jit_mod;
-    if (!jit_mod) jit_mod.reset(syn::jit_compile(prog));
+    if (!no_jit && !jit_mod) jit_mod.reset(syn::jit_compile(prog));
     if (jit_mod) {
         for (auto& [name, entry] : jit_mod->fns)
             vm.m_jit[name] = entry;
