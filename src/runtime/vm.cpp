@@ -27,7 +27,8 @@ VM::~VM()
         Obj* next = cur->gc_next;
         switch (cur->kind) {
         case ObjKind::String:   delete static_cast<ObjString*>(cur);   break;
-        case ObjKind::List:     delete static_cast<ObjList*>(cur);     break;
+        case ObjKind::List: case ObjKind::Tuple:
+                                delete static_cast<ObjList*>(cur);     break;
         case ObjKind::Map:      delete static_cast<ObjMap*>(cur);      break;
         case ObjKind::Function: delete static_cast<ObjFunction*>(cur); break;
         case ObjKind::Closure:  delete static_cast<ObjClosure*>(cur);  break;
@@ -216,7 +217,11 @@ void VM::collect_garbage()
                 m_str_pool = s;
                 break;
             }
-            case ObjKind::List: {
+            case ObjKind::List: case ObjKind::Tuple: {
+                // Tuples are ObjLists with kind=Tuple; pool them too (alloc_list
+                // resets kind to List on reuse). Without this they fell through
+                // to `delete`, so every tuple was a fresh malloc+free — the
+                // dominant cost in tuple-heavy code (binary_trees, linked_list).
                 auto* l = static_cast<ObjList*>(o);
                 l->items.clear();
                 l->gc_next = m_list_pool;
