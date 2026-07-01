@@ -12,6 +12,8 @@
 #include "synapse/runtime/value.h"
 #include "synapse/backend/jit.h"
 
+extern "C" void syn_rt_drain_jit_pool();
+
 static void register_stdlib(syn::VM& vm)
 {
     vm.define_native("print", [&vm](int argc, syn::Value* args) -> syn::Value {
@@ -283,6 +285,14 @@ static syn::Value run_source(const std::string& path, const std::string& src,
     syn::VM vm;
     register_stdlib(vm);
 
+    // Bytecode compile always (needed for disasm + interpreter fallback + globals predecl)
+    syn::DiagEngine compile_diag;
+    syn::ObjFunction* fn = syn::Compiler::compile(prog, source, compile_diag, vm);
+    if (!fn || compile_diag.has_errors()) {
+        compile_diag.print_all(source);
+        std::exit(1);
+    }
+
     // JIT compile pure-int/float functions + top-level __main__ if possible
     // SYN_NO_JIT set disables the JIT entirely (debugging / interpreter fallback).
     static const bool no_jit = std::getenv("SYN_NO_JIT") != nullptr;
@@ -292,21 +302,33 @@ static syn::Value run_source(const std::string& path, const std::string& src,
         for (auto& [name, entry] : jit_mod->fns)
             vm.m_jit[name] = entry;
 
-        // If __main__ is JIT'd, bypass interpreter entirely
+        // If __main__ is JIT'd, bypass interpreter entirely.
+        // Pre-register top-level functions as globals so JIT __main__ can call them via
+        // syn_rt_get_global. Scan the main chunk's constant pool for 0-upvalue ObjFunctions;
+        // create a bare ObjClosure for each and store under its name.
         auto mit = vm.m_jit.find("__main__");
         if (mit != vm.m_jit.end() && mit->second.main_fn && !disasm_mode) {
+            {
+                using syn::ObjKind; using syn::ObjFunction;
+                for (auto& cv : fn->chunk->constants) {
+                    if (!cv.is_ptr()) continue;
+                    if (cv.as_ptr()->kind != ObjKind::Function) continue;
+                    ObjFunction* pfn = static_cast<ObjFunction*>(cv.as_ptr());
+                    if (pfn->upvalue_count != 0 || pfn->name.empty()) continue;
+                    syn::ObjClosure* cl = vm.alloc<syn::ObjClosure>(pfn);
+                    vm.define_global(pfn->name, syn::Value::from_ptr(cl));
+                }
+            }
+            syn::tls_vm = &vm;  // value-JIT helpers need tls_vm for allocation
             try { mit->second.main_fn(0, nullptr); } catch (const std::exception& ex) {
+                syn::tls_vm = nullptr;
                 std::cerr << "RuntimeError: " << ex.what() << '\n'; std::exit(1);
             }
+            // Drain the JIT-local list pool (lists bypassed m_gc_list, must be freed manually)
+            syn_rt_drain_jit_pool();
+            syn::tls_vm = nullptr;
             return syn::Value::none_val();
         }
-    }
-
-    syn::DiagEngine compile_diag;
-    syn::ObjFunction* fn = syn::Compiler::compile(prog, source, compile_diag, vm);
-    if (!fn || compile_diag.has_errors()) {
-        compile_diag.print_all(source);
-        std::exit(1);
     }
 
     if (disasm_mode) {

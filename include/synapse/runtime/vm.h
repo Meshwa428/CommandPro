@@ -71,6 +71,8 @@ public:
     void mark_object(Obj* o);
     Value invoke_method(Value obj, MethodId mid, int nargs, Value* args);
     Value invoke_method_str(Value obj, const std::string& name, int nargs, Value* args);
+    Value call_fn(Value callee, int nargs, Value* args);  // public bridge for JIT runtime helpers
+    Value get_global(const std::string& name) const;      // global lookup for JIT helpers
 
 private:
     Value run_frame(CallFrame& frame);

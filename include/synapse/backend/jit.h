@@ -8,19 +8,22 @@
 namespace syn {
 
 // Named int/float functions: return raw int64_t/double (caller boxes with Value::from_int/from_float)
-using JitIntFn   = int64_t(*)(int, Value*);
-using JitFloatFn = double (*)(int, Value*);
+using JitIntFn     = int64_t(*)(int, Value*);
+using JitFloatFn   = double (*)(int, Value*);
 // __main__ JIT: prints directly, returns none
-using JitMainFn  = Value  (*)(int, Value*);
+using JitMainFn    = Value  (*)(int, Value*);
 // Generic value-typed JIT: operates on NaN-boxed Values, handles tuples/maps/
 // dynamic lists/recursion via runtime helpers. Can be called with any args.
-using JitValueFn = Value  (*)(int, Value*);
+using JitValueFn   = Value  (*)(int, Value*);
+// Closure body JIT: called with (nargs, args, upvals) where upvals = ObjUpvalue** cast to void**
+using JitClosureFn = Value  (*)(int, Value*, void**);
 
 struct JitEntry {
-    JitIntFn   int_fn   = nullptr;
-    JitFloatFn float_fn = nullptr;
-    JitMainFn  main_fn  = nullptr;  // non-null only for "__main__"
-    JitValueFn value_fn = nullptr;  // generic Value-typed compiled function
+    JitIntFn     int_fn    = nullptr;
+    JitFloatFn   float_fn  = nullptr;
+    JitMainFn    main_fn   = nullptr;   // non-null only for "__main__"
+    JitValueFn   value_fn  = nullptr;   // generic Value-typed compiled function
+    JitClosureFn closure_fn = nullptr;  // anonymous closure body JIT
 };
 
 struct JitModule {

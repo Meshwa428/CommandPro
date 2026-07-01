@@ -2318,27 +2318,71 @@ static void emit_list_fn(const FnDeclStmt* fn, const std::vector<LFnParam>& para
 // ════════════════════════════════════════════════════════════════════════════
 
 // ---- Analysis: is expr/stmt within the supported value-JIT subset? ----
-static bool vjit_expr_ok(const ExprNode* e, const VarSet& vfns);
-
-static bool vjit_call_ok(const CallExpr* c, const VarSet& vfns)
+// Collect all locally-declared variable names in a block (params not included).
+// Used to distinguish local vars from globals in value-JIT analysis.
+static void collect_let_names(const Block& body, VarSet& out)
 {
+    for (auto& s : body) {
+        if (auto* l = dynamic_cast<const LetStmt*>(s.get())) {
+            for (auto& n : l->names) out.insert(n);
+        }
+        if (auto* f = dynamic_cast<const IfStmt*>(s.get())) {
+            for (auto& br : f->branches) collect_let_names(br.body, out);
+        }
+        if (auto* w = dynamic_cast<const WhileStmt*>(s.get())) {
+            collect_let_names(w->body, out);
+        }
+        if (auto* fs = dynamic_cast<const ForStmt*>(s.get())) {
+            out.insert(fs->iter1);
+            collect_let_names(fs->body, out);
+        }
+    }
+}
+
+static bool vjit_expr_ok(const ExprNode* e, const VarSet& vfns, const VarSet& locals,
+                          const VarSet* all_fns = nullptr);
+
+static bool vjit_call_ok(const CallExpr* c, const VarSet& vfns, const VarSet& locals,
+                          const VarSet* all_fns = nullptr)
+{
+    // obj.append(val) — method call form
+    if (auto* fe = dynamic_cast<const FieldExpr*>(c->callee.get())) {
+        if (fe->field == "append" && c->args.size() == 1)
+            return vjit_expr_ok(fe->object.get(), vfns, locals, all_fns) &&
+                   vjit_expr_ok(c->args[0].value.get(), vfns, locals, all_fns);
+        return false;
+    }
     auto* id = dynamic_cast<const IdentExpr*>(c->callee.get());
-    if (!id || !vfns.count(id->name)) return false;   // only calls to value-JIT fns
-    for (auto& a : c->args) if (!vjit_expr_ok(a.value.get(), vfns)) return false;
+    if (!id) return false;
+    // value-JIT fns, builtins, local vars (closures → syn_rt_call_jitcl),
+    // and any top-level fn name (→ syn_rt_get_global + syn_rt_call_val)
+    bool ok_callee = vfns.count(id->name) ||
+                     (id->name == "len" && c->args.size() == 1) ||
+                     (id->name == "append" && c->args.size() == 2) ||
+                     id->name == "print" ||
+                     locals.count(id->name) ||
+                     (all_fns && all_fns->count(id->name));
+    if (!ok_callee) return false;
+    for (auto& a : c->args) if (!vjit_expr_ok(a.value.get(), vfns, locals, all_fns)) return false;
     return true;
 }
 
-static bool vjit_expr_ok(const ExprNode* e, const VarSet& vfns)
+static bool vjit_expr_ok(const ExprNode* e, const VarSet& vfns, const VarSet& locals,
+                          const VarSet* all_fns)
 {
     if (!e) return false;
-    if (dynamic_cast<const IntLitExpr*>(e))   return true;
-    if (dynamic_cast<const FloatLitExpr*>(e)) return true;
-    if (dynamic_cast<const BoolLitExpr*>(e))  return true;
-    if (dynamic_cast<const NoneLitExpr*>(e))  return true;
-    if (dynamic_cast<const IdentExpr*>(e))    return true;
+    if (dynamic_cast<const IntLitExpr*>(e))    return true;
+    if (dynamic_cast<const FloatLitExpr*>(e))  return true;
+    if (dynamic_cast<const BoolLitExpr*>(e))   return true;
+    if (dynamic_cast<const NoneLitExpr*>(e))   return true;
+    if (dynamic_cast<const StringLitExpr*>(e)) return true;
+    // Only accept identifiers that are known locals (params or let-declared).
+    // Global variables accessed via IdentExpr would generate undefined C symbols.
+    if (auto* n = dynamic_cast<const IdentExpr*>(e))
+        return locals.count(n->name) > 0;
     if (auto* u = dynamic_cast<const UnaryExpr*>(e)) {
         if (u->op != TokenKind::Minus && u->op != TokenKind::Not) return false;
-        return vjit_expr_ok(u->operand.get(), vfns);
+        return vjit_expr_ok(u->operand.get(), vfns, locals, all_fns);
     }
     if (auto* b = dynamic_cast<const BinaryExpr*>(e)) {
         using TK = TokenKind;
@@ -2347,49 +2391,122 @@ static bool vjit_expr_ok(const ExprNode* e, const VarSet& vfns)
         case TK::SlashSlash: case TK::Percent: case TK::StarStar:
         case TK::EqEq: case TK::BangEq: case TK::Lt: case TK::LtEq:
         case TK::Gt: case TK::GtEq: case TK::And: case TK::Or:
-            return vjit_expr_ok(b->left.get(), vfns) && vjit_expr_ok(b->right.get(), vfns);
+            return vjit_expr_ok(b->left.get(), vfns, locals, all_fns) &&
+                   vjit_expr_ok(b->right.get(), vfns, locals, all_fns);
+        case TK::Is:
+            return dynamic_cast<const NoneLitExpr*>(b->right.get()) != nullptr &&
+                   vjit_expr_ok(b->left.get(), vfns, locals, all_fns);
         default: return false;
         }
     }
     if (auto* ix = dynamic_cast<const IndexExpr*>(e))
-        return vjit_expr_ok(ix->object.get(), vfns) && vjit_expr_ok(ix->index.get(), vfns);
+        return vjit_expr_ok(ix->object.get(), vfns, locals, all_fns) &&
+               vjit_expr_ok(ix->index.get(), vfns, locals, all_fns);
     if (auto* t = dynamic_cast<const TupleExpr*>(e)) {
-        for (auto& el : t->elements) if (!vjit_expr_ok(el.get(), vfns)) return false;
+        for (auto& el : t->elements) if (!vjit_expr_ok(el.get(), vfns, locals, all_fns)) return false;
         return true;
     }
-    if (auto* c = dynamic_cast<const CallExpr*>(e)) return vjit_call_ok(c, vfns);
+    if (auto* l = dynamic_cast<const ListExpr*>(e)) {
+        for (auto& el : l->elements) if (!vjit_expr_ok(el.get(), vfns, locals, all_fns)) return false;
+        return true;
+    }
+    if (auto* cc = dynamic_cast<const CallExpr*>(e)) return vjit_call_ok(cc, vfns, locals, all_fns);
+    // FnExpr: ok if all free variables (upvalues) are locals in the outer function.
+    if (auto* fe = dynamic_cast<const FnExpr*>(e)) {
+        std::function<bool(const ExprNode*)> check_e = [&](const ExprNode* ex) -> bool {
+            if (!ex) return true;
+            if (auto* id = dynamic_cast<const IdentExpr*>(ex))
+                return locals.count(id->name) > 0 || vfns.count(id->name) > 0;
+            if (auto* b = dynamic_cast<const BinaryExpr*>(ex))
+                return check_e(b->left.get()) && check_e(b->right.get());
+            if (auto* u = dynamic_cast<const UnaryExpr*>(ex)) return check_e(u->operand.get());
+            if (auto* c2 = dynamic_cast<const IntLitExpr*>(ex)) return (void)c2, true;
+            if (auto* c2 = dynamic_cast<const FloatLitExpr*>(ex)) return (void)c2, true;
+            if (auto* c2 = dynamic_cast<const BoolLitExpr*>(ex)) return (void)c2, true;
+            if (auto* c2 = dynamic_cast<const NoneLitExpr*>(ex)) return (void)c2, true;
+            if (auto* c2 = dynamic_cast<const StringLitExpr*>(ex)) return (void)c2, true;
+            return false;
+        };
+        std::function<bool(const Block&)> check_b = [&](const Block& blk) -> bool {
+            for (auto& s : blk) {
+                if (auto* rs = dynamic_cast<const ReturnStmt*>(s.get()))
+                    for (auto& v : rs->values) if (!check_e(v.get())) return false;
+                if (auto* ls = dynamic_cast<const LetStmt*>(s.get()))
+                    for (auto& v : ls->values) if (!check_e(v.get())) return false;
+                if (auto* as = dynamic_cast<const AssignStmt*>(s.get()))
+                    for (auto& v : as->values) if (!check_e(v.get())) return false;
+            }
+            return true;
+        };
+        return check_b(fe->body);
+    }
     return false;
 }
 
-static bool vjit_block_ok(const Block& b, const VarSet& vfns);
+static bool vjit_block_ok(const Block& b, const VarSet& vfns, VarSet locals,
+                           const VarSet* all_fns = nullptr);
 
-static bool vjit_stmt_ok(const StmtNode* s, const VarSet& vfns)
+static bool vjit_stmt_ok(const StmtNode* s, const VarSet& vfns, const VarSet& locals,
+                          const VarSet* all_fns = nullptr)
 {
     if (auto* l = dynamic_cast<const LetStmt*>(s)) {
         if (l->bind_kind != LetBindKind::Simple || l->names.size() != 1 ||
             l->values.size() != 1) return false;
-        return vjit_expr_ok(l->values[0].get(), vfns);
+        return vjit_expr_ok(l->values[0].get(), vfns, locals, all_fns);
     }
     if (auto* r = dynamic_cast<const ReturnStmt*>(s)) {
         if (r->values.empty()) return true;
         if (r->values.size() != 1) return false;
-        return vjit_expr_ok(r->values[0].get(), vfns);
+        return vjit_expr_ok(r->values[0].get(), vfns, locals, all_fns);
     }
     if (auto* f = dynamic_cast<const IfStmt*>(s)) {
         for (auto& br : f->branches) {
-            if (br.cond && !vjit_expr_ok(br.cond.get(), vfns)) return false;
-            if (!vjit_block_ok(br.body, vfns)) return false;
+            if (br.cond && !vjit_expr_ok(br.cond.get(), vfns, locals, all_fns)) return false;
+            if (!vjit_block_ok(br.body, vfns, locals, all_fns)) return false;
         }
         return true;
     }
+    if (auto* w = dynamic_cast<const WhileStmt*>(s)) {
+        return vjit_expr_ok(w->cond.get(), vfns, locals, all_fns) &&
+               vjit_block_ok(w->body, vfns, locals, all_fns);
+    }
+    if (auto* fs = dynamic_cast<const ForStmt*>(s)) {
+        // Only simple range form: for i = start to end { ... } (no step, no iter2)
+        if (!fs->range_end || fs->range_step || !fs->iter2.empty()) return false;
+        if (!vjit_expr_ok(fs->source.get(), vfns, locals, all_fns)) return false;
+        if (!vjit_expr_ok(fs->range_end.get(), vfns, locals, all_fns)) return false;
+        VarSet body_locals = locals;
+        body_locals.insert(fs->iter1);
+        return vjit_block_ok(fs->body, vfns, std::move(body_locals), all_fns);
+    }
+    if (auto* a = dynamic_cast<const AssignStmt*>(s)) {
+        if (a->lvalues.size() != 1 || a->values.size() != 1) return false;
+        auto* lv = a->lvalues[0].get();
+        if (auto* id = dynamic_cast<const IdentExpr*>(lv)) {
+            if (!locals.count(id->name)) return false;
+        } else if (auto* ix = dynamic_cast<const IndexExpr*>(lv)) {
+            if (!vjit_expr_ok(ix, vfns, locals, all_fns)) return false;
+        } else {
+            return false;
+        }
+        return vjit_expr_ok(a->values[0].get(), vfns, locals, all_fns);
+    }
+    if (dynamic_cast<const BreakStmt*>(s) || dynamic_cast<const ContinueStmt*>(s)) return true;
+    if (dynamic_cast<const FnDeclStmt*>(s)) return true;
     if (auto* es = dynamic_cast<const ExprStmt*>(s))
-        return vjit_expr_ok(es->expr.get(), vfns);
+        return vjit_expr_ok(es->expr.get(), vfns, locals, all_fns);
     return false;
 }
 
-static bool vjit_block_ok(const Block& b, const VarSet& vfns)
+static bool vjit_block_ok(const Block& b, const VarSet& vfns, VarSet locals,
+                           const VarSet* all_fns)
 {
-    for (auto& s : b) if (!vjit_stmt_ok(s.get(), vfns)) return false;
+    // Accumulate let-declared names so later statements can see earlier ones.
+    for (auto& s : b) {
+        if (!vjit_stmt_ok(s.get(), vfns, locals, all_fns)) return false;
+        if (auto* ls = dynamic_cast<const LetStmt*>(s.get()))
+            for (auto& n : ls->names) locals.insert(n);
+    }
     return true;
 }
 
@@ -2399,7 +2516,7 @@ static VarSet find_value_fns(const std::vector<const FnDeclStmt*>& fns,
                              const VarSet& ifns, const VarSet& ffns)
 {
     VarSet result;
-    for (auto* fn : fns)                          // seed with everything not already specialized
+    for (auto* fn : fns)
         if (!ifns.count(fn->name) && !ffns.count(fn->name))
             result.insert(fn->name);
     bool changed = true;
@@ -2407,18 +2524,61 @@ static VarSet find_value_fns(const std::vector<const FnDeclStmt*>& fns,
         changed = false;
         for (auto* fn : fns) {
             if (!result.count(fn->name)) continue;
-            if (!vjit_block_ok(fn->body, result)) { result.erase(fn->name); changed = true; }
+            // Build locals: params + all let/for vars in body
+            VarSet locals;
+            for (auto& p : fn->params) locals.insert(p.name);
+            collect_let_names(fn->body, locals);
+            if (!vjit_block_ok(fn->body, result, locals)) {
+                result.erase(fn->name); changed = true;
+            }
         }
     }
     return result;
 }
 
 // ---- Codegen ----
+// Upvalue name → index map for closure body JIT
+using UpvalMap = std::unordered_map<std::string, int>;
+
+// Hoisted list: data pointer and length hoisted out of a while loop
+struct HoistedList {
+    std::string data_var; // C var name: uint64_t* pointing to list elements
+    std::string len_var;  // C var name: int64_t length (from _size)
+};
+
 struct VJitCtx {
     std::ostream& o;
     int& tmp;                       // unique temp counter
     const VarSet& vfns;
+    const VarSet* locals = nullptr;   // non-null when emitting value-JIT main/fn body
+    const UpvalMap* upvals = nullptr;  // non-null when JIT-ing a closure body
+    const std::unordered_map<std::string, HoistedList>* hoisted = nullptr;
+    const VarSet* all_fns = nullptr;  // all top-level fn names → global fallback via syn_rt_get_global
+    const std::unordered_map<std::string, std::string>* hoisted_strlits = nullptr; // decoded value → C varname
+    const VarSet* recyclable_lists = nullptr; // empty-list locals to recycle at function end
+    const std::string* current_fn_name = nullptr; // name of the enclosing named fn (for closure creation)
 };
+
+// Decode a Synapse string literal raw token (includes surrounding quotes + escapes)
+// into its actual string value.
+static std::string str_unescape(const std::string& raw) {
+    std::string out;
+    size_t i = 1, end = raw.empty() ? 0 : raw.size() - 1;
+    for (; i < end; ++i) {
+        if (raw[i] == '\\' && i+1 < end) {
+            ++i;
+            switch (raw[i]) {
+            case 'n': out+='\n'; break; case 't': out+='\t'; break;
+            case 'r': out+='\r'; break; case '\\': out+='\\'; break;
+            case '"': out+='"'; break; case '\'': out+='\''; break;
+            default: out+=raw[i]; break;
+            }
+        } else {
+            out += raw[i];
+        }
+    }
+    return out;
+}
 
 // Emit expression, return the name of a C variable/expression holding its Value.
 static std::string vjit_emit(const ExprNode* e, VJitCtx& c, int ind)
@@ -2447,6 +2607,29 @@ static std::string vjit_emit(const ExprNode* e, VJitCtx& c, int ind)
         c.o << sp << "uint64_t " << t << " = syn_none_val();\n";
         return t;
     }
+    if (auto* n = dynamic_cast<const StringLitExpr*>(e)) {
+        std::string val = str_unescape(n->raw);
+        // Use pre-hoisted variable if available (avoids per-iteration allocation)
+        if (c.hoisted_strlits) {
+            auto it = c.hoisted_strlits->find(val);
+            if (it != c.hoisted_strlits->end()) return it->second;
+        }
+        std::string t = fresh();
+        // Re-escape for C string literal
+        std::string esc;
+        for (unsigned char ch : val) {
+            if (ch == '"')  esc += "\\\"";
+            else if (ch == '\\') esc += "\\\\";
+            else if (ch == '\n') esc += "\\n";
+            else if (ch == '\r') esc += "\\r";
+            else if (ch == '\t') esc += "\\t";
+            else if (ch < 32)   { char buf[8]; snprintf(buf,8,"\\x%02x",ch); esc+=buf; }
+            else esc += ch;
+        }
+        c.o << sp << "uint64_t " << t << " = syn_rt_str_lit(\"" << esc
+            << "\", " << val.size() << ");\n";
+        return t;
+    }
     if (auto* n = dynamic_cast<const IdentExpr*>(e)) {
         return "_v_" + n->name;   // param/local (declared elsewhere)
     }
@@ -2456,7 +2639,7 @@ static std::string vjit_emit(const ExprNode* e, VJitCtx& c, int ind)
         if (u->op == TokenKind::Minus)
             c.o << sp << "uint64_t " << t << " = syn_rt_sub(syn_from_int(0LL), " << a << ");\n";
         else // Not
-            c.o << sp << "uint64_t " << t << " = syn_rt_truthy(" << a << ") ? VAL_FALSE : VAL_TRUE;\n";
+            c.o << sp << "uint64_t " << t << " = _syn_truthy(" << a << ") ? VAL_FALSE : VAL_TRUE;\n";
         return t;
     }
     if (auto* b = dynamic_cast<const BinaryExpr*>(e)) {
@@ -2466,34 +2649,84 @@ static std::string vjit_emit(const ExprNode* e, VJitCtx& c, int ind)
             std::string t = fresh();
             std::string l = vjit_emit(b->left.get(), c, ind);
             c.o << sp << "uint64_t " << t << " = " << l << ";\n";
-            c.o << sp << "if (" << (b->op == TK::Or ? "!" : "") << "syn_rt_truthy(" << t << ")) {\n";
+            c.o << sp << "if (" << (b->op == TK::Or ? "!" : "") << "_syn_truthy(" << t << ")) {\n";
             std::string r = vjit_emit(b->right.get(), c, ind + 1);
             c.o << sp << "    " << t << " = " << r << ";\n";
             c.o << sp << "}\n";
             return t;
         }
+        if (b->op == TK::Is) {
+            // `x is none` — emit direct none-check (avoids calling any runtime fn)
+            std::string lv = vjit_emit(b->left.get(), c, ind);
+            std::string t = fresh();
+            c.o << sp << "uint64_t " << t << " = (" << lv << " == syn_none_val()) ? VAL_TRUE : VAL_FALSE;\n";
+            return t;
+        }
+        // Detect: Value cmp len(hoisted_list) → use _syn_lt_i/etc. to skip boxing the length.
+        if (c.hoisted && (b->op==TK::Lt||b->op==TK::LtEq||b->op==TK::Gt||b->op==TK::GtEq)) {
+            auto try_len_hoisted = [&](const ExprNode* maybe_len, const ExprNode* other_side,
+                                       bool swapped) -> std::string {
+                auto* call = dynamic_cast<const CallExpr*>(maybe_len);
+                if (!call || call->args.size() != 1) return {};
+                auto* fn_id = dynamic_cast<const IdentExpr*>(call->callee.get());
+                if (!fn_id || fn_id->name != "len") return {};
+                auto* arg_id = dynamic_cast<const IdentExpr*>(call->args[0].value.get());
+                if (!arg_id || !c.hoisted->count(arg_id->name)) return {};
+                const std::string& hl = c.hoisted->at(arg_id->name).len_var;
+                std::string val = vjit_emit(other_side, c, ind);
+                // Determine the right _i variant (swap operands if len is on LHS)
+                const char* fn_i = nullptr;
+                TK op = swapped ? (b->op==TK::Lt?TK::Gt:b->op==TK::LtEq?TK::GtEq:b->op==TK::Gt?TK::Lt:TK::LtEq) : b->op;
+                switch (op) {
+                case TK::Lt: fn_i="_syn_lt_i"; break; case TK::LtEq: fn_i="_syn_lte_i"; break;
+                case TK::Gt: fn_i="_syn_gt_i"; break; case TK::GtEq: fn_i="_syn_gte_i"; break;
+                default: break;
+                }
+                if (!fn_i) return {};
+                std::string t2 = fresh();
+                c.o << sp << "uint64_t " << t2 << " = " << fn_i << "(" << val << ", " << hl << ");\n";
+                return t2;
+            };
+            std::string fast = try_len_hoisted(b->right.get(), b->left.get(), false);
+            if (fast.empty()) fast = try_len_hoisted(b->left.get(), b->right.get(), true);
+            if (!fast.empty()) return fast;
+        }
         std::string l = vjit_emit(b->left.get(), c, ind);
         std::string r = vjit_emit(b->right.get(), c, ind);
         const char* fn = nullptr;
         switch (b->op) {
-        case TK::Plus: fn="syn_rt_add"; break; case TK::Minus: fn="syn_rt_sub"; break;
-        case TK::Star: fn="syn_rt_mul"; break; case TK::Slash: fn="syn_rt_div"; break;
+        // Use inline helpers for arithmetic/compare to avoid PLT overhead
+        case TK::Plus: fn="_syn_add"; break; case TK::Minus: fn="_syn_sub"; break;
+        case TK::Star: fn="_syn_mul"; break; case TK::Slash: fn="syn_rt_div"; break;
         case TK::SlashSlash: fn="syn_rt_idiv"; break; case TK::Percent: fn="syn_rt_mod"; break;
         case TK::StarStar: fn="syn_rt_pow"; break;
-        case TK::EqEq: fn="syn_rt_eq"; break; case TK::BangEq: fn="syn_rt_neq"; break;
-        case TK::Lt: fn="syn_rt_lt"; break; case TK::LtEq: fn="syn_rt_lte"; break;
-        case TK::Gt: fn="syn_rt_gt"; break; case TK::GtEq: fn="syn_rt_gte"; break;
-        default: fn="syn_rt_add"; break;
+        case TK::EqEq: fn="_syn_eq"; break; case TK::BangEq: fn="_syn_neq"; break;
+        case TK::Lt: fn="_syn_lt"; break; case TK::LtEq: fn="_syn_lte"; break;
+        case TK::Gt: fn="_syn_gt"; break; case TK::GtEq: fn="_syn_gte"; break;
+        default: fn="_syn_add"; break;
         }
         std::string t = fresh();
         c.o << sp << "uint64_t " << t << " = " << fn << "(" << l << ", " << r << ");\n";
         return t;
     }
     if (auto* ix = dynamic_cast<const IndexExpr*>(e)) {
+        std::string t = fresh();
+        if (auto* obj_id = dynamic_cast<const IdentExpr*>(ix->object.get())) {
+            if (c.hoisted && c.hoisted->count(obj_id->name)) {
+                const auto& h = c.hoisted->at(obj_id->name);
+                std::string k = vjit_emit(ix->index.get(), c, ind);
+                // Fast path: bounds-safe direct array access using hoisted data ptr + len
+                c.o << sp << "uint64_t " << t << ";\n";
+                c.o << sp << "{ int64_t _hi" << t << " = syn_as_int(" << k << ");\n";
+                c.o << sp << "  " << t << " = (" << h.data_var << " && (uint64_t)_hi" << t
+                    << " < (uint64_t)" << h.len_var << ") ? " << h.data_var
+                    << "[(size_t)_hi" << t << "] : _syn_index(_v_" << obj_id->name << ", " << k << "); }\n";
+                return t;
+            }
+        }
         std::string ob = vjit_emit(ix->object.get(), c, ind);
         std::string k  = vjit_emit(ix->index.get(), c, ind);
-        std::string t = fresh();
-        c.o << sp << "uint64_t " << t << " = syn_rt_index(" << ob << ", " << k << ");\n";
+        c.o << sp << "uint64_t " << t << " = _syn_index(" << ob << ", " << k << ");\n";
         return t;
     }
     if (auto* tup = dynamic_cast<const TupleExpr*>(e)) {
@@ -2507,15 +2740,157 @@ static std::string vjit_emit(const ExprNode* e, VJitCtx& c, int ind)
             << els.size() << ");\n";
         return t;
     }
+    if (auto* lst = dynamic_cast<const ListExpr*>(e)) {
+        std::vector<std::string> els;
+        for (auto& el : lst->elements) els.push_back(vjit_emit(el.get(), c, ind));
+        std::string t = fresh();
+        if (els.empty()) {
+            c.o << sp << "uint64_t " << t << " = syn_rt_list_new(0, 0);\n";
+        } else {
+            std::string arr = fresh();
+            c.o << sp << "uint64_t " << arr << "[] = {";
+            for (size_t i = 0; i < els.size(); ++i) { if (i) c.o << ", "; c.o << els[i]; }
+            c.o << "};\n";
+            c.o << sp << "uint64_t " << t << " = syn_rt_list_new(" << arr << ", "
+                << els.size() << ");\n";
+        }
+        return t;
+    }
     if (auto* call = dynamic_cast<const CallExpr*>(e)) {
+        std::string t = fresh();
+        // Method call: obj.append(val)
+        if (auto* fe = dynamic_cast<const FieldExpr*>(call->callee.get())) {
+            std::string obj = vjit_emit(fe->object.get(), c, ind);
+            if (fe->field == "append") {
+                std::string arg = vjit_emit(call->args[0].value.get(), c, ind);
+                c.o << sp << "_syn_append(" << obj << ", " << arg << ");\n";
+                c.o << sp << "uint64_t " << t << " = syn_none_val();\n";
+                return t;
+            }
+        }
         auto* id = static_cast<const IdentExpr*>(call->callee.get());
         std::vector<std::string> as;
         for (auto& a : call->args) as.push_back(vjit_emit(a.value.get(), c, ind));
-        std::string t = fresh();
-        c.o << sp << "uint64_t " << t << " = _jitv_" << id->name << "(";
-        for (size_t i = 0; i < as.size(); ++i) { if (i) c.o << ", "; c.o << as[i]; }
-        c.o << ");\n";
+        if (id->name == "len") {
+            // Use hoisted length when available (avoids indirection through object)
+            if (c.hoisted && call->args.size() == 1) {
+                if (auto* arg_id = dynamic_cast<const IdentExpr*>(call->args[0].value.get()))
+                    if (c.hoisted->count(arg_id->name)) {
+                        c.o << sp << "uint64_t " << t << " = syn_from_int(" << c.hoisted->at(arg_id->name).len_var << ");\n";
+                        return t;
+                    }
+            }
+            c.o << sp << "uint64_t " << t << " = _syn_len(" << as[0] << ");\n";
+            return t;
+        }
+        if (id->name == "append") {
+            c.o << sp << "_syn_append(" << as[0] << ", " << as[1] << ");\n";
+            c.o << sp << "uint64_t " << t << " = syn_none_val();\n";
+            return t;
+        }
+        if (id->name == "print") {
+            if (as.size() == 1) {
+                c.o << sp << "syn_rt_print1(" << as[0] << ");\n";
+            } else if (as.size() > 1) {
+                std::string arr = fresh();
+                c.o << sp << "uint64_t " << arr << "[] = {";
+                for (size_t i = 0; i < as.size(); ++i) { if (i) c.o << ","; c.o << as[i]; }
+                c.o << "};\n";
+                c.o << sp << "syn_rt_print_n(" << arr << ", " << as.size() << ");\n";
+            }
+            c.o << sp << "uint64_t " << t << " = syn_none_val();\n";
+            return t;
+        }
+        // Local variable holding a closure → fast closure call (inlined dispatch)
+        if (c.locals && c.locals->count(id->name)) {
+            if (as.empty()) {
+                c.o << sp << "uint64_t " << t << " = _syn_fastcl0(_v_" << id->name << ");\n";
+            } else {
+                std::string arr = fresh();
+                c.o << sp << "uint64_t " << arr << "[] = {";
+                for (size_t i = 0; i < as.size(); ++i) { if (i) c.o << ", "; c.o << as[i]; }
+                c.o << "};\n";
+                c.o << sp << "uint64_t " << t << " = _syn_fastcl_n(_v_" << id->name
+                    << ", " << as.size() << ", " << arr << ");\n";
+            }
+            return t;
+        }
+        // Named value-JIT fn → direct call
+        if (c.vfns.count(id->name)) {
+            c.o << sp << "uint64_t " << t << " = _jitv_" << id->name << "(";
+            for (size_t i = 0; i < as.size(); ++i) { if (i) c.o << ", "; c.o << as[i]; }
+            c.o << ");\n";
+            return t;
+        }
+        // Named global fn not in vfns (e.g. returns a closure) → look up and call via interpreter
+        {
+            std::string gv = fresh();
+            c.o << sp << "uint64_t " << gv << " = syn_rt_get_global(\"" << id->name << "\");\n";
+            if (as.empty()) {
+                c.o << sp << "uint64_t " << t << " = syn_rt_call_val(" << gv << ", 0, 0);\n";
+            } else {
+                std::string arr = fresh();
+                c.o << sp << "uint64_t " << arr << "[] = {";
+                for (size_t i = 0; i < as.size(); ++i) { if (i) c.o << ", "; c.o << as[i]; }
+                c.o << "};\n";
+                c.o << sp << "uint64_t " << t << " = syn_rt_call_val(" << gv
+                    << ", " << as.size() << ", " << arr << ");\n";
+            }
+        }
         return t;
+    }
+    // FnExpr: emit syn_rt_make_closure("outer_fn", nth, n_upvals, &upvals_arr)
+    if (auto* fe = dynamic_cast<const FnExpr*>(e)) {
+        if (c.current_fn_name && c.locals) {
+            // Collect upvalues: locals of outer fn referenced inside the inner fn body
+            VarSet inner_params, inner_lets;
+            for (auto& p : fe->params) inner_params.insert(p.name);
+            collect_let_names(fe->body, inner_lets);
+            UpvalMap uvm; int nxt_uv = 0;
+            std::function<void(const ExprNode*)> scan_e2 = [&](const ExprNode* ex) {
+                if (!ex) return;
+                if (auto* id = dynamic_cast<const IdentExpr*>(ex)) {
+                    if (!inner_params.count(id->name) && !inner_lets.count(id->name) &&
+                        !uvm.count(id->name) && c.locals->count(id->name))
+                        uvm[id->name] = nxt_uv++;
+                    return;
+                }
+                if (auto* b = dynamic_cast<const BinaryExpr*>(ex))
+                    { scan_e2(b->left.get()); scan_e2(b->right.get()); return; }
+                if (auto* u = dynamic_cast<const UnaryExpr*>(ex)) { scan_e2(u->operand.get()); return; }
+            };
+            std::function<void(const Block&)> scan_b2 = [&](const Block& blk) {
+                for (auto& st : blk) {
+                    if (auto* rs = dynamic_cast<const ReturnStmt*>(st.get()))
+                        for (auto& v : rs->values) scan_e2(v.get());
+                    if (auto* ls = dynamic_cast<const LetStmt*>(st.get()))
+                        for (auto& v : ls->values) scan_e2(v.get());
+                    if (auto* as = dynamic_cast<const AssignStmt*>(st.get()))
+                        for (auto& v : as->values) scan_e2(v.get());
+                }
+            };
+            scan_b2(fe->body);
+            std::vector<std::pair<int,std::string>> sorted_uvs;
+            for (auto& [uname, uidx] : uvm) sorted_uvs.push_back({uidx, uname});
+            std::sort(sorted_uvs.begin(), sorted_uvs.end());
+            std::string t = fresh();
+            if (sorted_uvs.empty()) {
+                c.o << sp << "uint64_t " << t << " = syn_rt_make_closure(\""
+                    << *c.current_fn_name << "\", 0, 0, 0);\n";
+            } else {
+                std::string arr = fresh();
+                c.o << sp << "uint64_t " << arr << "[] = {";
+                for (size_t i = 0; i < sorted_uvs.size(); ++i) {
+                    if (i) c.o << ", ";
+                    c.o << "_v_" << sorted_uvs[i].second;
+                }
+                c.o << "};\n";
+                c.o << sp << "uint64_t " << t << " = syn_rt_make_closure(\""
+                    << *c.current_fn_name << "\", 0, "
+                    << sorted_uvs.size() << ", " << arr << ");\n";
+            }
+            return t;
+        }
     }
     // unreachable (analysis guarantees subset)
     std::string t = fresh();
@@ -2529,11 +2904,25 @@ static void vjit_emit_stmt(const StmtNode* s, VJitCtx& c, int ind)
 {
     std::string sp(ind * 4, ' ');
     if (auto* l = dynamic_cast<const LetStmt*>(s)) {
+        // For recyclable empty lists, use the JIT-local pool (bypasses GC, avoids malloc on reuse).
+        if (c.recyclable_lists && c.recyclable_lists->count(l->names[0])) {
+            if (auto* le = dynamic_cast<const ListExpr*>(l->values[0].get())) {
+                if (le->elements.empty()) {
+                    c.o << sp << "uint64_t _v_" << l->names[0] << " = syn_rt_list_new_jit(0);\n";
+                    return;
+                }
+            }
+        }
         std::string v = vjit_emit(l->values[0].get(), c, ind);
         c.o << sp << "uint64_t _v_" << l->names[0] << " = " << v << ";\n";
         return;
     }
     if (auto* r = dynamic_cast<const ReturnStmt*>(s)) {
+        // Recycle local JIT lists before returning (capacity preserved for next call).
+        if (c.recyclable_lists) {
+            for (auto& nm : *c.recyclable_lists)
+                c.o << sp << "syn_rt_list_recycle(_v_" << nm << ");\n";
+        }
         if (r->values.empty()) { c.o << sp << "return syn_none_val();\n"; return; }
         std::string v = vjit_emit(r->values[0].get(), c, ind);
         c.o << sp << "return " << v << ";\n";
@@ -2547,7 +2936,7 @@ static void vjit_emit_stmt(const StmtNode* s, VJitCtx& c, int ind)
             const auto& br = f->branches[bi];
             if (!br.cond) { vjit_emit_block(br.body, c, bind); return; }
             std::string cnd = vjit_emit(br.cond.get(), c, bind);
-            c.o << bsp << "if (syn_rt_truthy(" << cnd << ")) {\n";
+            c.o << bsp << "if (_syn_truthy(" << cnd << ")) {\n";
             vjit_emit_block(br.body, c, bind + 1);
             c.o << bsp << "}";
             if (bi + 1 < f->branches.size()) {
@@ -2561,15 +2950,245 @@ static void vjit_emit_stmt(const StmtNode* s, VJitCtx& c, int ind)
         if (!f->branches.empty()) emit_branch(0, ind);
         return;
     }
-    if (auto* es = dynamic_cast<const ExprStmt*>(s)) {
-        vjit_emit(es->expr.get(), c, ind);  // emitted for side effects; result unused
+    if (auto* w = dynamic_cast<const WhileStmt*>(s)) {
+        // Re-evaluate the condition inside the loop each iteration.
+        c.o << sp << "while (1) {\n";
+        std::string cnd = vjit_emit(w->cond.get(), c, ind + 1);
+        c.o << sp << "    if (!_syn_truthy(" << cnd << ")) break;\n";
+        vjit_emit_block(w->body, c, ind + 1);
+        c.o << sp << "}\n";
         return;
+    }
+    if (auto* a = dynamic_cast<const AssignStmt*>(s)) {
+        auto* lv = a->lvalues[0].get();
+        if (auto* id = dynamic_cast<const IdentExpr*>(lv)) {
+            // Detect `x = x + <small_int_lit>` / `x = x - <small_int_lit>`:
+            // emit `_v_x += n` directly (NaN-boxed int add: VNAN_BASE bits unchanged for n<2^47).
+            // Detect `x = x + str_lit` inside for-loops (hoisted_strlits active)
+            // and emit inplace add to avoid per-iteration ObjString allocation.
+            if (c.hoisted_strlits && !c.upvals) {
+                auto* bin = dynamic_cast<const BinaryExpr*>(a->values[0].get());
+                if (bin && bin->op == TokenKind::Plus) {
+                    auto* lhs_id = dynamic_cast<const IdentExpr*>(bin->left.get());
+                    auto* rhs_sl = dynamic_cast<const StringLitExpr*>(bin->right.get());
+                    if (lhs_id && rhs_sl && lhs_id->name == id->name) {
+                        std::string rhs = vjit_emit(bin->right.get(), c, ind);
+                        c.o << sp << "syn_rt_str_inplace_add(&_v_" << id->name << ", " << rhs << ");\n";
+                        return;
+                    }
+                }
+            }
+            std::string v = vjit_emit(a->values[0].get(), c, ind);
+            c.o << sp << "_v_" << id->name << " = " << v << ";\n";
+            if (c.upvals) {
+                auto it = c.upvals->find(id->name);
+                if (it != c.upvals->end())
+                    c.o << sp << "_syn_uv_write(upvals[" << it->second << "], _v_" << id->name << ");\n";
+            }
+        } else if (auto* ix = dynamic_cast<const IndexExpr*>(lv)) {
+            if (auto* obj_id = dynamic_cast<const IdentExpr*>(ix->object.get())) {
+                if (c.hoisted && c.hoisted->count(obj_id->name)) {
+                    const auto& h = c.hoisted->at(obj_id->name);
+                    std::string k = vjit_emit(ix->index.get(), c, ind);
+                    std::string v = vjit_emit(a->values[0].get(), c, ind);
+                    // Fast path: bounds-safe direct array write
+                    c.o << sp << "{ int64_t _wi = syn_as_int(" << k << ");\n";
+                    c.o << sp << "  if (" << h.data_var << " && (uint64_t)_wi < (uint64_t)" << h.len_var << ")\n";
+                    c.o << sp << "    " << h.data_var << "[(size_t)_wi] = " << v << ";\n";
+                    c.o << sp << "  else _syn_index_set(_v_" << obj_id->name << ", " << k << ", " << v << "); }\n";
+                    return;
+                }
+            }
+            std::string ob = vjit_emit(ix->object.get(), c, ind);
+            std::string k  = vjit_emit(ix->index.get(), c, ind);
+            std::string v  = vjit_emit(a->values[0].get(), c, ind);
+            c.o << sp << "_syn_index_set(" << ob << ", " << k << ", " << v << ");\n";
+        }
+        return;
+    }
+    if (auto* fs = dynamic_cast<const ForStmt*>(s)) {
+        // Range for: emit as native int loop to avoid per-iteration boxing.
+        // Hoist string literals used in the body outside the loop to avoid
+        // per-iteration allocation (e.g. for i=0 to N { s = s + "x" }).
+        std::unordered_map<std::string, std::string> slit_map;
+        std::function<void(const ExprNode*)> collect_strlits = [&](const ExprNode* e) {
+            if (!e) return;
+            if (auto* sl = dynamic_cast<const StringLitExpr*>(e)) {
+                std::string val = str_unescape(sl->raw);
+                if (!slit_map.count(val)) {
+                    std::string vname = "_sl_" + std::to_string(c.tmp++);
+                    std::string esc;
+                    for (unsigned char ch : val) {
+                        if (ch=='"') esc+="\\\""; else if (ch=='\\') esc+="\\\\";
+                        else if (ch=='\n') esc+="\\n"; else if (ch<32) { char b[8]; snprintf(b,8,"\\x%02x",ch); esc+=b; }
+                        else esc+=ch;
+                    }
+                    c.o << sp << "uint64_t " << vname << " = syn_rt_str_lit(\"" << esc << "\", " << val.size() << ");\n";
+                    slit_map[val] = vname;
+                }
+                return;
+            }
+            if (auto* b = dynamic_cast<const BinaryExpr*>(e)) { collect_strlits(b->left.get()); collect_strlits(b->right.get()); return; }
+            if (auto* cc = dynamic_cast<const CallExpr*>(e)) { for (auto& a : cc->args) collect_strlits(a.value.get()); return; }
+        };
+        std::function<void(const Block&)> scan_body = [&](const Block& blk) {
+            for (auto& st : blk) {
+                if (auto* ls = dynamic_cast<const LetStmt*>(st.get())) for (auto& v : ls->values) collect_strlits(v.get());
+                else if (auto* as = dynamic_cast<const AssignStmt*>(st.get())) for (auto& v : as->values) collect_strlits(v.get());
+                else if (auto* es = dynamic_cast<const ExprStmt*>(st.get())) collect_strlits(es->expr.get());
+                else if (auto* ws = dynamic_cast<const WhileStmt*>(st.get())) { collect_strlits(ws->cond.get()); scan_body(ws->body); }
+                else if (auto* nfs = dynamic_cast<const ForStmt*>(st.get())) scan_body(nfs->body);
+            }
+        };
+        scan_body(fs->body);
+
+        std::string start = vjit_emit(fs->source.get(), c, ind);
+        std::string end_  = vjit_emit(fs->range_end.get(), c, ind);
+        std::string raw   = "_raw_" + std::to_string(c.tmp++);
+        c.o << sp << "{\n";
+        c.o << sp << "    int64_t _end_" << raw << " = syn_as_int(" << end_ << ");\n";
+        c.o << sp << "    for (int64_t " << raw << " = syn_as_int(" << start << "); "
+            << raw << " < _end_" << raw << "; ++" << raw << ") {\n";
+        c.o << sp << "        uint64_t _v_" << fs->iter1 << " = syn_from_int(" << raw << ");\n";
+        // Temporarily set hoisted string literal map for the body
+        const auto* old_sl = c.hoisted_strlits;
+        if (!slit_map.empty()) c.hoisted_strlits = &slit_map;
+        vjit_emit_block(fs->body, c, ind + 2);
+        c.hoisted_strlits = old_sl;
+        c.o << sp << "    }\n";
+        c.o << sp << "}\n";
+        return;
+    }
+    if (dynamic_cast<const BreakStmt*>(s))    { c.o << sp << "break;\n"; return; }
+    if (dynamic_cast<const ContinueStmt*>(s)) { c.o << sp << "continue;\n"; return; }
+    if (dynamic_cast<const FnDeclStmt*>(s))   { return; }  // already emitted above
+    if (auto* es = dynamic_cast<const ExprStmt*>(s)) {
+        vjit_emit(es->expr.get(), c, ind);  // side effects only
+        return;
+    }
+}
+
+// Scan while body to find variables used via IndexExpr (indexed) and those
+// directly reassigned or appended-to (excluded). Hoist candidates = indexed - excluded.
+static void find_hoist_candidates(const Block& body,
+    std::unordered_set<std::string>& indexed,
+    std::unordered_set<std::string>& excluded)
+{
+    std::function<void(const ExprNode*)> se = [&](const ExprNode* e) {
+        if (!e) return;
+        if (auto* ix = dynamic_cast<const IndexExpr*>(e)) {
+            if (auto* id = dynamic_cast<const IdentExpr*>(ix->object.get()))
+                indexed.insert(id->name);
+            se(ix->object.get()); se(ix->index.get()); return;
+        }
+        if (auto* b = dynamic_cast<const BinaryExpr*>(e)) { se(b->left.get()); se(b->right.get()); return; }
+        if (auto* u = dynamic_cast<const UnaryExpr*>(e)) { se(u->operand.get()); return; }
+        if (auto* cc = dynamic_cast<const CallExpr*>(e)) {
+            if (auto* cid = dynamic_cast<const IdentExpr*>(cc->callee.get()))
+                if (cid->name == "append" && !cc->args.empty())
+                    if (auto* aid = dynamic_cast<const IdentExpr*>(cc->args[0].value.get()))
+                        excluded.insert(aid->name);
+            for (auto& a : cc->args) se(a.value.get());
+        }
+    };
+    std::function<void(const Block&)> sb = [&](const Block& blk) {
+        for (auto& ss : blk) {
+            if (auto* as = dynamic_cast<const AssignStmt*>(ss.get())) {
+                for (auto& lv : as->lvalues) {
+                    if (auto* id = dynamic_cast<const IdentExpr*>(lv.get()))
+                        excluded.insert(id->name);  // direct var reassignment
+                    else if (auto* ix = dynamic_cast<const IndexExpr*>(lv.get()))
+                        if (auto* obj_id = dynamic_cast<const IdentExpr*>(ix->object.get()))
+                            indexed.insert(obj_id->name);  // index-write: data ptr still hoist-able
+                }
+                for (auto& rv : as->values) se(rv.get());
+            }
+            if (auto* es = dynamic_cast<const ExprStmt*>(ss.get())) se(es->expr.get());
+            if (auto* ifs = dynamic_cast<const IfStmt*>(ss.get()))
+                for (auto& br : ifs->branches) sb(br.body);
+            if (auto* ws2 = dynamic_cast<const WhileStmt*>(ss.get())) sb(ws2->body);
+            if (auto* rs = dynamic_cast<const ReturnStmt*>(ss.get()))
+                for (auto& rv : rs->values) se(rv.get());
+        }
+    };
+    sb(body);
+}
+
+// Emit while-loop preamble: list reserve (for append-loops) + data-pointer hoisting.
+// hoist_out is extended with any new hoisted variables (caller merges with outer scope).
+static void try_emit_while_preamble(
+    const WhileStmt* ws,
+    const std::unordered_map<std::string, const ExprNode*>& recent_lets,
+    std::unordered_map<std::string, HoistedList>& hoist_out,
+    VJitCtx& c, int ind)
+{
+    std::string sp(ind * 4, ' ');
+
+    // 1. Reserve: let counter=start; while counter < bound { append(list,...) }
+    auto* cond = dynamic_cast<const BinaryExpr*>(ws->cond.get());
+    if (cond && cond->op == TokenKind::Lt) {
+        auto* cid = dynamic_cast<const IdentExpr*>(cond->left.get());
+        if (cid) {
+            auto it = recent_lets.find(cid->name);
+            if (it != recent_lets.end()) {
+                for (auto& bs : ws->body) {
+                    auto* es = dynamic_cast<const ExprStmt*>(bs.get());
+                    if (!es) continue;
+                    auto* call = dynamic_cast<const CallExpr*>(es->expr.get());
+                    if (!call || call->args.size() < 2) continue;
+                    auto* callee = dynamic_cast<const IdentExpr*>(call->callee.get());
+                    if (!callee || callee->name != "append") continue;
+                    std::string sv = vjit_emit(it->second, c, ind);
+                    std::string bv = vjit_emit(cond->right.get(), c, ind);
+                    std::string lv = vjit_emit(call->args[0].value.get(), c, ind);
+                    std::string rsz = "_rsz" + std::to_string(c.tmp++);
+                    c.o << sp << "{ uint64_t " << rsz << " = _syn_sub(" << bv << ", " << sv << ");\n";
+                    c.o << sp << "  int64_t _rn" << rsz << " = syn_as_int(" << rsz << ");\n";
+                    c.o << sp << "  if (_rn" << rsz << " > 0) syn_rt_list_reserve(" << lv << ", (uint32_t)_rn" << rsz << "); }\n";
+                    break;
+                }
+            }
+        }
+    }
+
+    // 2. Hoist data ptrs for loop-invariant indexed variables.
+    // Only hoist variables that are not already hoisted by an outer scope.
+    std::unordered_set<std::string> indexed, excluded;
+    find_hoist_candidates(ws->body, indexed, excluded);
+    for (const auto& vname : indexed) {
+        if (excluded.count(vname) || hoist_out.count(vname)) continue;
+        std::string dv = "_hd" + std::to_string(c.tmp++);
+        std::string lv = "_hl" + std::to_string(c.tmp++);
+        c.o << sp << "uint64_t* " << dv << " = NULL; int64_t " << lv << " = 0;\n";
+        c.o << sp << "{ uint64_t _hv = _v_" << vname << ";\n";
+        c.o << sp << "  if ((_hv >> 48) == 0xFFFCu) {\n";
+        c.o << sp << "    char* _hp = (char*)(uintptr_t)(_hv & 0x0000FFFFFFFFFFFFuLL);\n";
+        c.o << sp << "    if (*(unsigned char*)_hp == 1 || *(unsigned char*)_hp == 2)\n";
+        c.o << sp << "      { " << dv << " = *(uint64_t**)(_hp+32); " << lv << " = *(uint32_t*)(_hp+40); } } }\n";
+        hoist_out[vname] = HoistedList{dv, lv};
     }
 }
 
 static void vjit_emit_block(const Block& b, VJitCtx& c, int ind)
 {
-    for (auto& s : b) vjit_emit_stmt(s.get(), c, ind);
+    std::unordered_map<std::string, const ExprNode*> recent_lets;
+    for (auto& s : b) {
+        if (auto* ws = dynamic_cast<const WhileStmt*>(s.get())) {
+            // Inherit outer hoisted map, extend for this while loop
+            std::unordered_map<std::string, HoistedList> hmap;
+            if (c.hoisted) hmap = *c.hoisted;
+            try_emit_while_preamble(ws, recent_lets, hmap, c, ind);
+            const auto* old_h = c.hoisted;
+            c.hoisted = &hmap;
+            vjit_emit_stmt(ws, c, ind);
+            c.hoisted = old_h;
+        } else {
+            vjit_emit_stmt(s.get(), c, ind);
+        }
+        if (auto* ls = dynamic_cast<const LetStmt*>(s.get()))
+            if (ls->names.size() == 1 && ls->values.size() == 1)
+                recent_lets[ls->names[0]] = ls->values[0].get();
+    }
 }
 
 // ── Source generation ─────────────────────────────────────────────────────────
@@ -2616,6 +3235,185 @@ extern uint64_t syn_rt_gte(uint64_t,uint64_t);  extern int      syn_rt_truthy(ui
 extern uint64_t syn_rt_tuple_new(const uint64_t*,int);
 extern uint64_t syn_rt_list_new(const uint64_t*,int);
 extern uint64_t syn_rt_index(uint64_t,uint64_t);
+extern void     syn_rt_index_set(uint64_t,uint64_t,uint64_t);
+extern void     syn_rt_append(uint64_t,uint64_t);
+extern uint64_t syn_rt_len(uint64_t);
+extern void     syn_rt_list_reserve(uint64_t,uint32_t);
+extern uint64_t syn_rt_map_new(void);
+extern uint64_t syn_rt_str_lit(const char*,int);
+extern void     syn_rt_print1(uint64_t);
+extern void     syn_rt_print_n(const uint64_t*,int);
+extern uint64_t syn_rt_call_jitcl(uint64_t,int,const uint64_t*);
+extern uint64_t syn_rt_call_val(uint64_t,int,const uint64_t*);
+extern uint64_t syn_rt_get_global(const char*);
+extern void     syn_rt_str_inplace_add(uint64_t*,uint64_t);
+extern uint64_t syn_rt_list_new_jit(uint32_t);
+extern void     syn_rt_list_recycle(uint64_t);
+extern uint64_t syn_rt_make_closure(const char*,int,int,const uint64_t*);
+
+// Fast inline closure call: avoids PLT overhead for the cached hot path.
+// ObjClosure layout: Obj(16) + fn*(8) + upvalues_vec(24: data/size/cap) + jit_cache*(8)
+// JitEntry layout:   int_fn(8) + float_fn(8) + main_fn(8) + value_fn(8) + closure_fn(8)
+// ObjKind::Closure = 5
+static inline uint64_t _syn_fastcl0(uint64_t cl_) {
+    if ((cl_ >> 48) != 0xFFFCu) return syn_rt_call_jitcl(cl_, 0, 0);
+    char* p = (char*)(uintptr_t)(cl_ & 0x0000FFFFFFFFFFFFuLL);
+    if (*(unsigned char*)p != 5) return syn_rt_call_jitcl(cl_, 0, 0);
+    void* jc = *(void**)(p + 48);  // jit_cache
+    if (!jc) return syn_rt_call_jitcl(cl_, 0, 0);  // first call fills cache
+    if ((uintptr_t)jc <= 1) return syn_rt_call_val(cl_, 0, 0);
+    typedef uint64_t (*CFn)(int,uint64_t*,void**);
+    CFn fn = *(CFn*)((char*)jc + 32);  // JitEntry::closure_fn
+    if (!fn) return syn_rt_call_val(cl_, 0, 0);
+    void** uvs = *(void***)(p + 24);   // upvalues.data()
+    return fn(0, 0, uvs);
+}
+static inline uint64_t _syn_fastcl_n(uint64_t cl_, int na, const uint64_t* aa) {
+    if ((cl_ >> 48) != 0xFFFCu) return syn_rt_call_jitcl(cl_, na, aa);
+    char* p = (char*)(uintptr_t)(cl_ & 0x0000FFFFFFFFFFFFuLL);
+    if (*(unsigned char*)p != 5) return syn_rt_call_jitcl(cl_, na, aa);
+    void* jc = *(void**)(p + 48);
+    if (!jc) return syn_rt_call_jitcl(cl_, na, aa);
+    if ((uintptr_t)jc <= 1) return syn_rt_call_val(cl_, na, aa);
+    typedef uint64_t (*CFn)(int,uint64_t*,void**);
+    CFn fn = *(CFn*)((char*)jc + 32);
+    if (!fn) return syn_rt_call_val(cl_, na, aa);
+    void** uvs = *(void***)(p + 24);
+    return fn(na, (uint64_t*)aa, uvs);
+}
+
+// Fast-path inline helpers: pure arithmetic with int fast path avoids PLT calls.
+static inline int _syn_is_int(uint64_t v) { return (v >> 48) == 0xFFF8u; }
+static inline uint64_t _syn_add(uint64_t a, uint64_t b) {
+    if (_syn_is_int(a) & _syn_is_int(b)) return syn_from_int(syn_as_int(a) + syn_as_int(b));
+    return syn_rt_add(a, b);
+}
+static inline uint64_t _syn_sub(uint64_t a, uint64_t b) {
+    if (_syn_is_int(a) & _syn_is_int(b)) return syn_from_int(syn_as_int(a) - syn_as_int(b));
+    return syn_rt_sub(a, b);
+}
+static inline uint64_t _syn_mul(uint64_t a, uint64_t b) {
+    if (_syn_is_int(a) & _syn_is_int(b)) return syn_from_int(syn_as_int(a) * syn_as_int(b));
+    return syn_rt_mul(a, b);
+}
+static inline uint64_t _syn_lt(uint64_t a, uint64_t b) {
+    if (_syn_is_int(a) & _syn_is_int(b))
+        return (syn_as_int(a) < syn_as_int(b)) ? VAL_TRUE : VAL_FALSE;
+    return syn_rt_lt(a, b);
+}
+static inline uint64_t _syn_lte(uint64_t a, uint64_t b) {
+    if (_syn_is_int(a) & _syn_is_int(b))
+        return (syn_as_int(a) <= syn_as_int(b)) ? VAL_TRUE : VAL_FALSE;
+    return syn_rt_lte(a, b);
+}
+static inline uint64_t _syn_gt(uint64_t a, uint64_t b) {
+    if (_syn_is_int(a) & _syn_is_int(b))
+        return (syn_as_int(a) > syn_as_int(b)) ? VAL_TRUE : VAL_FALSE;
+    return syn_rt_gt(a, b);
+}
+static inline uint64_t _syn_gte(uint64_t a, uint64_t b) {
+    if (_syn_is_int(a) & _syn_is_int(b))
+        return (syn_as_int(a) >= syn_as_int(b)) ? VAL_TRUE : VAL_FALSE;
+    return syn_rt_gte(a, b);
+}
+// Variants taking a raw int64_t (avoids boxing the constant operand — used when
+// one side is a hoisted list length or other known-int compile-time value).
+static inline uint64_t _syn_lt_i(uint64_t a, int64_t n) {
+    return _syn_is_int(a) ? ((syn_as_int(a)<n)?VAL_TRUE:VAL_FALSE) : syn_rt_lt(a,syn_from_int(n));
+}
+static inline uint64_t _syn_lte_i(uint64_t a, int64_t n) {
+    return _syn_is_int(a) ? ((syn_as_int(a)<=n)?VAL_TRUE:VAL_FALSE) : syn_rt_lte(a,syn_from_int(n));
+}
+static inline uint64_t _syn_gt_i(uint64_t a, int64_t n) {
+    return _syn_is_int(a) ? ((syn_as_int(a)>n)?VAL_TRUE:VAL_FALSE) : syn_rt_gt(a,syn_from_int(n));
+}
+static inline uint64_t _syn_gte_i(uint64_t a, int64_t n) {
+    return _syn_is_int(a) ? ((syn_as_int(a)>=n)?VAL_TRUE:VAL_FALSE) : syn_rt_gte(a,syn_from_int(n));
+}
+static inline uint64_t _syn_eq(uint64_t a, uint64_t b) {
+    if (a == b) return VAL_TRUE;
+    // Different NaN-box tags → different types → never equal
+    if ((a | VPAY_MASK) != (b | VPAY_MASK)) return VAL_FALSE;
+    if (_syn_is_int(a) & _syn_is_int(b))
+        return (syn_as_int(a) == syn_as_int(b)) ? VAL_TRUE : VAL_FALSE;
+    return syn_rt_eq(a, b);
+}
+static inline uint64_t _syn_neq(uint64_t a, uint64_t b) {
+    if (a == b) return VAL_FALSE;
+    // Different NaN-box tags → different types → always not-equal
+    if ((a | VPAY_MASK) != (b | VPAY_MASK)) return VAL_TRUE;
+    if (_syn_is_int(a) & _syn_is_int(b))
+        return (syn_as_int(a) != syn_as_int(b)) ? VAL_TRUE : VAL_FALSE;
+    return syn_rt_neq(a, b);
+}
+static inline int _syn_truthy(uint64_t v) {
+    if (v == VAL_TRUE)  return 1;
+    if (v == VAL_FALSE || v == (VNAN_BASE | ((uint64_t)3<<48))) return 0;
+    if (_syn_is_int(v)) return syn_as_int(v) != 0;
+    return syn_rt_truthy(v);
+}
+
+// Inline list/tuple index and append — avoids PLT for common case.
+// ObjList layout (after SBO): Obj(16) + ListItems._buf[2](16) + _data*(8) + _size(4) + _cap(4)
+//   _data  at ObjList offset 32  (Value* pointer)
+//   _size  at ObjList offset 40  (uint32_t)
+//   _cap   at ObjList offset 44  (uint32_t)
+// sizeof(Value)=8. Fallback to runtime helpers for maps, strings, or OOB.
+static inline uint64_t _syn_index(uint64_t obj, uint64_t key) {
+    if ((obj >> 48) != 0xFFFCu) return syn_rt_index(obj, key);
+    char* p = (char*)(uintptr_t)(obj & 0x0000FFFFFFFFFFFFuLL);
+    unsigned char kind = *(unsigned char*)p;
+    if (kind != 1 && kind != 2) return syn_rt_index(obj, key);
+    uint64_t* data = *(uint64_t**)(p + 32);
+    uint32_t  len  = *(uint32_t*)(p + 40);
+    int64_t idx = (int64_t)(key << 16) >> 16;
+    if (idx < 0) idx += (int64_t)len;
+    if ((uint64_t)idx >= (uint64_t)len) return syn_rt_index(obj, key);
+    return data[(size_t)idx];
+}
+static inline void _syn_index_set(uint64_t obj, uint64_t key, uint64_t val) {
+    if ((obj >> 48) != 0xFFFCu) { syn_rt_index_set(obj, key, val); return; }
+    char* p = (char*)(uintptr_t)(obj & 0x0000FFFFFFFFFFFFuLL);
+    unsigned char kind = *(unsigned char*)p;
+    if (kind != 1 && kind != 2) { syn_rt_index_set(obj, key, val); return; }
+    uint64_t* data = *(uint64_t**)(p + 32);
+    uint32_t  len  = *(uint32_t*)(p + 40);
+    int64_t idx = (int64_t)(key << 16) >> 16;
+    if (idx < 0) idx += (int64_t)len;
+    if ((uint64_t)idx >= (uint64_t)len) { syn_rt_index_set(obj, key, val); return; }
+    data[(size_t)idx] = val;
+}
+// Fast append: avoids PLT when list has spare inline capacity.
+static inline void _syn_append(uint64_t list, uint64_t val) {
+    if ((list >> 48) != 0xFFFCu) { syn_rt_append(list, val); return; }
+    char* p = (char*)(uintptr_t)(list & 0x0000FFFFFFFFFFFFuLL);
+    if (*(unsigned char*)p != 1) { syn_rt_append(list, val); return; }
+    uint64_t* data = *(uint64_t**)(p + 32);
+    uint32_t  sz   = *(uint32_t*)(p + 40);
+    uint32_t  cp   = *(uint32_t*)(p + 44);
+    if (sz < cp) { data[sz] = val; *(uint32_t*)(p + 40) = sz + 1; }
+    else syn_rt_append(list, val);
+}
+// Fast len: reads _size directly for list/tuple, avoids PLT.
+static inline uint64_t _syn_len(uint64_t obj) {
+    if ((obj >> 48) != 0xFFFCu) return syn_rt_len(obj);
+    char* p = (char*)(uintptr_t)(obj & 0x0000FFFFFFFFFFFFuLL);
+    unsigned char kind = *(unsigned char*)p;
+    if (kind != 1 && kind != 2) return syn_rt_len(obj);
+    return VNAN_BASE | (uint64_t)*(uint32_t*)(p + 40);
+}
+
+// ObjUpvalue layout: Obj(16) + location*(8) + closed(8) + is_closed(1)
+static inline uint64_t _syn_uv_read(void* uv) {
+    char* p = (char*)uv;
+    if (*(char*)(p + 32)) return *(uint64_t*)(p + 24);
+    return **(uint64_t**)(p + 16);
+}
+static inline void _syn_uv_write(void* uv, uint64_t val) {
+    char* p = (char*)uv;
+    if (*(char*)(p + 32)) *(uint64_t*)(p + 24) = val;
+    else **(uint64_t**)(p + 16) = val;
+}
 
 static inline int64_t syn_idiv(int64_t a, int64_t b) {
     if (!b) return 0;
@@ -2698,6 +3496,55 @@ static inline int64_t syn_ipow(int64_t base, int64_t exp) {
         o << "    return 0.0;\n}\n\n";
     }
 
+    // Scan a function body for top-level `let x = []` variables that are safe to
+    // recycle at function end: never returned AND never passed as a non-first argument
+    // to any function call (which would store the list into another container).
+    auto collect_recyclable_lists = [](const Block& body) -> VarSet {
+        VarSet excluded;
+        // Walk all expressions and mark variables that escape
+        std::function<void(const ExprNode*)> chk_expr = [&](const ExprNode* e) {
+            if (!e) return;
+            if (auto* call = dynamic_cast<const CallExpr*>(e)) {
+                // Non-first args may store the value into a container → mark as escaped
+                for (size_t ai = 1; ai < call->args.size(); ++ai)
+                    if (auto* id = dynamic_cast<const IdentExpr*>(call->args[ai].value.get()))
+                        excluded.insert(id->name);
+                chk_expr(call->callee.get());
+                for (auto& a : call->args) chk_expr(a.value.get());
+                return;
+            }
+            if (auto* b = dynamic_cast<const BinaryExpr*>(e)) { chk_expr(b->left.get()); chk_expr(b->right.get()); return; }
+            if (auto* u = dynamic_cast<const UnaryExpr*>(e)) { chk_expr(u->operand.get()); return; }
+            if (auto* ix = dynamic_cast<const IndexExpr*>(e)) { chk_expr(ix->object.get()); chk_expr(ix->index.get()); return; }
+        };
+        std::function<void(const Block&)> chk_block = [&](const Block& blk) {
+            for (auto& st : blk) {
+                if (auto* rs = dynamic_cast<const ReturnStmt*>(st.get())) {
+                    for (auto& v : rs->values)
+                        if (auto* id = dynamic_cast<const IdentExpr*>(v.get())) excluded.insert(id->name);
+                }
+                if (auto* ls = dynamic_cast<const LetStmt*>(st.get())) for (auto& v : ls->values) chk_expr(v.get());
+                if (auto* as = dynamic_cast<const AssignStmt*>(st.get())) { for (auto& v : as->values) chk_expr(v.get()); for (auto& lv : as->lvalues) chk_expr(lv.get()); }
+                if (auto* es = dynamic_cast<const ExprStmt*>(st.get())) chk_expr(es->expr.get());
+                if (auto* ifs = dynamic_cast<const IfStmt*>(st.get())) for (auto& br : ifs->branches) chk_block(br.body);
+                if (auto* ws = dynamic_cast<const WhileStmt*>(st.get())) { chk_expr(ws->cond.get()); chk_block(ws->body); }
+                if (auto* fs = dynamic_cast<const ForStmt*>(st.get())) { chk_expr(fs->source.get()); chk_expr(fs->range_end.get()); chk_block(fs->body); }
+            }
+        };
+        chk_block(body);
+        VarSet result;
+        for (auto& st : body) {
+            if (auto* ls = dynamic_cast<const LetStmt*>(st.get())) {
+                if (ls->names.size() == 1 && ls->values.size() == 1 &&
+                    !excluded.count(ls->names[0])) {
+                    if (auto* le = dynamic_cast<const ListExpr*>(ls->values[0].get()))
+                        if (le->elements.empty()) result.insert(ls->names[0]);
+                }
+            }
+        }
+        return result;
+    };
+
     // ── Generic value-typed functions ──
     VarSet vfns = find_value_fns(fns, ifns, ffns);
     if (!vfns.empty()) {
@@ -2720,8 +3567,17 @@ static inline int64_t syn_ipow(int64_t base, int64_t exp) {
             }
             o << ") {\n";
             int tmp = 0;
+            VarSet fn_locals;
+            for (auto& p : fn->params) fn_locals.insert(p.name);
+            collect_let_names(fn->body, fn_locals);
+            VarSet rlists = collect_recyclable_lists(fn->body);
             VJitCtx ctx{o, tmp, vfns};
+            ctx.locals = &fn_locals;
+            ctx.current_fn_name = &fn->name;
+            ctx.recyclable_lists = rlists.empty() ? nullptr : &rlists;
             vjit_emit_block(fn->body, ctx, 1);
+            // Recycle local JIT lists before implicit return (capacity preserved for next call)
+            for (auto& nm : rlists) o << "    syn_rt_list_recycle(_v_" << nm << ");\n";
             o << "    return syn_none_val();\n}\n\n";
         }
         // public wrappers
@@ -2734,6 +3590,133 @@ static inline int64_t syn_ipow(int64_t base, int64_t exp) {
                 o << "nargs>" << (int)i << "?args[" << (int)i << "]:syn_none_val()";
             }
             o << ");\n}\n\n";
+        }
+    }
+
+    // ── Closure body JIT: anonymous functions returned from named functions ──────
+    // Generate syn_jitcl_<name> for any FnExpr returned by a named function whose
+    // body is vjit-able with upvalue access. Registered in m_jit under "<fn>".
+    {
+        // Helper: collect free variables (upvalues) of a FnExpr in order of first reference
+        std::function<void(const ExprNode*, const VarSet&, const VarSet&, const VarSet&,
+                           UpvalMap&, int&)> scan_expr_uv;
+        std::function<void(const Block&, const VarSet&, const VarSet&, const VarSet&,
+                           UpvalMap&, int&)> scan_block_uv;
+        scan_expr_uv = [&](const ExprNode* e, const VarSet& outer_locs,
+                           const VarSet& inner_params, const VarSet& inner_lets,
+                           UpvalMap& uvm, int& nxt) {
+            if (!e) return;
+            if (auto* id = dynamic_cast<const IdentExpr*>(e)) {
+                if (!inner_params.count(id->name) && !inner_lets.count(id->name) &&
+                    !uvm.count(id->name) && outer_locs.count(id->name))
+                    uvm[id->name] = nxt++;
+                return;
+            }
+            if (auto* u = dynamic_cast<const UnaryExpr*>(e)) {
+                scan_expr_uv(u->operand.get(), outer_locs, inner_params, inner_lets, uvm, nxt); return;
+            }
+            if (auto* b = dynamic_cast<const BinaryExpr*>(e)) {
+                scan_expr_uv(b->left.get(), outer_locs, inner_params, inner_lets, uvm, nxt);
+                scan_expr_uv(b->right.get(), outer_locs, inner_params, inner_lets, uvm, nxt); return;
+            }
+            if (auto* ce = dynamic_cast<const CallExpr*>(e)) {
+                scan_expr_uv(ce->callee.get(), outer_locs, inner_params, inner_lets, uvm, nxt);
+                for (auto& arg : ce->args)
+                    scan_expr_uv(arg.value.get(), outer_locs, inner_params, inner_lets, uvm, nxt);
+                return;
+            }
+            if (auto* ix = dynamic_cast<const IndexExpr*>(e)) {
+                scan_expr_uv(ix->object.get(), outer_locs, inner_params, inner_lets, uvm, nxt);
+                scan_expr_uv(ix->index.get(), outer_locs, inner_params, inner_lets, uvm, nxt);
+            }
+        };
+        scan_block_uv = [&](const Block& blk, const VarSet& outer_locs,
+                            const VarSet& inner_params, const VarSet& inner_lets,
+                            UpvalMap& uvm, int& nxt) {
+            for (auto& s : blk) {
+                auto scan_e = [&](const ExprNode* e) {
+                    scan_expr_uv(e, outer_locs, inner_params, inner_lets, uvm, nxt);
+                };
+                if (auto* ls = dynamic_cast<const LetStmt*>(s.get()))
+                    for (auto& v : ls->values) scan_e(v.get());
+                else if (auto* rs = dynamic_cast<const ReturnStmt*>(s.get()))
+                    for (auto& v : rs->values) scan_e(v.get());
+                else if (auto* as = dynamic_cast<const AssignStmt*>(s.get())) {
+                    for (auto& v : as->values) scan_e(v.get());
+                    for (auto& lv2 : as->lvalues) scan_e(lv2.get());
+                }
+                else if (auto* es = dynamic_cast<const ExprStmt*>(s.get())) scan_e(es->expr.get());
+                else if (auto* ifs = dynamic_cast<const IfStmt*>(s.get())) {
+                    for (auto& br : ifs->branches) {
+                        scan_e(br.cond.get());
+                        scan_block_uv(br.body, outer_locs, inner_params, inner_lets, uvm, nxt);
+                    }
+                }
+                else if (auto* ws = dynamic_cast<const WhileStmt*>(s.get())) {
+                    scan_e(ws->cond.get());
+                    scan_block_uv(ws->body, outer_locs, inner_params, inner_lets, uvm, nxt);
+                }
+                else if (auto* fos = dynamic_cast<const ForStmt*>(s.get())) {
+                    scan_e(fos->source.get());
+                    scan_e(fos->range_end.get());
+                    scan_block_uv(fos->body, outer_locs, inner_params, inner_lets, uvm, nxt);
+                }
+            }
+        };
+
+        for (auto* fn : fns) {
+            VarSet outer_locs;
+            for (auto& p : fn->params) outer_locs.insert(p.name);
+            collect_let_names(fn->body, outer_locs);
+
+            for (auto& stmt : fn->body) {
+                auto* ret = dynamic_cast<const ReturnStmt*>(stmt.get());
+                if (!ret || ret->values.size() != 1) continue;
+                auto* fe = dynamic_cast<const FnExpr*>(ret->values[0].get());
+                if (!fe) continue;
+
+                VarSet inner_params, inner_lets;
+                for (auto& p : fe->params) inner_params.insert(p.name);
+                collect_let_names(fe->body, inner_lets);
+
+                UpvalMap uvm; int nxt_uv = 0;
+                scan_block_uv(fe->body, outer_locs, inner_params, inner_lets, uvm, nxt_uv);
+                if (uvm.empty()) continue;
+
+                // closure_locals = inner params + inner lets + upvalue names
+                VarSet closure_locs = inner_params;
+                closure_locs.insert(inner_lets.begin(), inner_lets.end());
+                for (auto& [uname, _] : uvm) closure_locs.insert(uname);
+
+                if (!vjit_block_ok(fe->body, vfns, closure_locs)) continue;
+
+                // Sanitize "<fn>" → "_fn_" for C identifier
+                std::string c_name = "<fn>";
+                for (char& ch : c_name) if (!isalnum((unsigned char)ch) && ch != '_') ch = '_';
+
+                o << "Value syn_jitcl_" << c_name << "(int nargs, Value* args, void** upvals) {\n";
+                // Load upvalue locals in index order
+                std::vector<std::pair<int,std::string>> sorted_uvs;
+                for (auto& [uname, uidx] : uvm) sorted_uvs.push_back({uidx, uname});
+                std::sort(sorted_uvs.begin(), sorted_uvs.end());
+                for (auto& [uidx, uname] : sorted_uvs)
+                    o << "    uint64_t _v_" << uname << " = _syn_uv_read(upvals[" << uidx << "]);\n";
+                // Params
+                for (int i = 0; i < (int)fe->params.size(); ++i)
+                    o << "    uint64_t _v_" << fe->params[i].name
+                      << " = (nargs > " << i << ") ? args[" << i << "].raw : syn_none_val();\n";
+                // Inner let vars not already declared
+                VarSet uv_names; for (auto& [uname, _] : uvm) uv_names.insert(uname);
+                for (auto& lname : inner_lets)
+                    if (!uv_names.count(lname) && !inner_params.count(lname))
+                        o << "    uint64_t _v_" << lname << " = syn_none_val();\n";
+
+                int tmp_cl = 0;
+                VJitCtx cctx{o, tmp_cl, vfns, nullptr, &uvm};
+                vjit_emit_block(fe->body, cctx, 1);
+                o << "    return syn_none_val();\n}\n\n";
+                break; // one FnExpr per outer function
+            }
         }
     }
 
@@ -2854,6 +3837,70 @@ static inline int64_t syn_ipow(int64_t base, int64_t exp) {
         o << "    return syn_none_val();\n}\n\n";
     }
 
+    // ── Generic value-typed __main__ ──
+    // Only emit when the value-JIT callees are non-recursive. Recursive functions
+    // create unbounded live objects across calls; without GC checkpoints (which the
+    // interpreter provides at every CALL boundary), memory pressure tanks performance.
+    if (!main_is_int && !main_is_float && !main_is_mixed && !main_is_list && main_stmts) {
+        VarSet vfns2 = find_value_fns(fns, ifns, ffns);
+        // Check for recursion: a function is recursive if its body calls itself.
+        std::function<bool(const ExprNode*, const std::string&)> expr_calls_self =
+            [&](const ExprNode* e, const std::string& nm) -> bool {
+            if (!e) return false;
+            if (auto* c = dynamic_cast<const CallExpr*>(e)) {
+                if (auto* id = dynamic_cast<const IdentExpr*>(c->callee.get()))
+                    if (id->name == nm) return true;
+                for (auto& a : c->args) if (expr_calls_self(a.value.get(), nm)) return true;
+            }
+            if (auto* b = dynamic_cast<const BinaryExpr*>(e))
+                return expr_calls_self(b->left.get(), nm) || expr_calls_self(b->right.get(), nm);
+            if (auto* u = dynamic_cast<const UnaryExpr*>(e)) return expr_calls_self(u->operand.get(), nm);
+            if (auto* ix = dynamic_cast<const IndexExpr*>(e))
+                return expr_calls_self(ix->object.get(), nm) || expr_calls_self(ix->index.get(), nm);
+            return false;
+        };
+        std::function<bool(const Block&, const std::string&)> block_calls_self =
+            [&](const Block& b, const std::string& nm) -> bool {
+            for (auto& s : b) {
+                if (auto* es = dynamic_cast<const ExprStmt*>(s.get()))
+                    if (expr_calls_self(es->expr.get(), nm)) return true;
+                if (auto* l = dynamic_cast<const LetStmt*>(s.get()))
+                    for (auto& v : l->values) if (expr_calls_self(v.get(), nm)) return true;
+                if (auto* a = dynamic_cast<const AssignStmt*>(s.get()))
+                    for (auto& v : a->values) if (expr_calls_self(v.get(), nm)) return true;
+                if (auto* r = dynamic_cast<const ReturnStmt*>(s.get()))
+                    for (auto& v : r->values) if (expr_calls_self(v.get(), nm)) return true;
+                if (auto* f = dynamic_cast<const IfStmt*>(s.get()))
+                    for (auto& br : f->branches) { if (expr_calls_self(br.cond.get(), nm) || block_calls_self(br.body, nm)) return true; }
+                if (auto* w = dynamic_cast<const WhileStmt*>(s.get()))
+                    if (expr_calls_self(w->cond.get(), nm) || block_calls_self(w->body, nm)) return true;
+                if (auto* fs = dynamic_cast<const ForStmt*>(s.get()))
+                    if (block_calls_self(fs->body, nm)) return true;
+            }
+            return false;
+        };
+        bool any_recursive = false;
+        for (auto* fn : fns) {
+            if (vfns2.count(fn->name) && block_calls_self(fn->body, fn->name)) {
+                any_recursive = true; break;
+            }
+        }
+        if (!any_recursive) {
+            VarSet main_locals;
+            collect_let_names(*main_stmts, main_locals);
+            VarSet all_fn_names;
+            for (auto* fn : fns) all_fn_names.insert(fn->name);
+            bool ok = vjit_block_ok(*main_stmts, vfns2, main_locals, &all_fn_names);
+            if (ok) {
+                o << "Value syn_jitv___main__(int nargs, Value* args) {\n";
+                int tmp2 = 0;
+                VJitCtx ctx2{o, tmp2, vfns2, &main_locals, nullptr, nullptr, &all_fn_names};
+                vjit_emit_block(*main_stmts, ctx2, 1);
+                o << "    return syn_none_val();\n}\n\n";
+            }
+        }
+    }
+
     return o.str();
 }
 
@@ -2946,11 +3993,39 @@ JitModule* jit_compile(const Program& prog)
         }
     }
 
-    if (ifns.empty() && ffns.empty() && !main_int && !main_float && !main_mixed && !main_list
-        && find_value_fns(fns, ifns, ffns).empty())
-        return nullptr;
+    {
+        VarSet vfns_pre = find_value_fns(fns, ifns, ffns);
+        // Build all_fn_names: all top-level user-defined fn names (for global fallback)
+        VarSet all_fn_names_pre;
+        for (auto* fn : fns) all_fn_names_pre.insert(fn->name);
+        // Also check if __main__ can be value-JIT'd as a fallback
+        bool main_vjit = false;
+        if (!main_int && !main_float && !main_mixed && !main_list && vfns_pre.empty()) {
+            VarSet ml; collect_let_names(prog.stmts, ml);
+            main_vjit = vjit_block_ok(prog.stmts, vfns_pre, ml, &all_fn_names_pre);
+        }
+        // Check if any named function returns a JIT-able closure body
+        bool has_closure_jit = false;
+        if (!main_vjit && vfns_pre.empty()) {
+            for (auto* fn : fns) {
+                VarSet outer_locs;
+                for (auto& p : fn->params) outer_locs.insert(p.name);
+                collect_let_names(fn->body, outer_locs);
+                for (auto& stmt : fn->body) {
+                    auto* ret = dynamic_cast<const ReturnStmt*>(stmt.get());
+                    if (!ret || ret->values.size() != 1) continue;
+                    if (dynamic_cast<const FnExpr*>(ret->values[0].get())) { has_closure_jit = true; break; }
+                }
+                if (has_closure_jit) break;
+            }
+        }
+        if (ifns.empty() && ffns.empty() && !main_int && !main_float && !main_mixed && !main_list
+            && vfns_pre.empty() && !main_vjit && !has_closure_jit)
+            return nullptr;
+    }
 
-    const Block* main_stmts = (main_int || main_float || main_mixed || main_list) ? &prog.stmts : nullptr;
+    // Always pass prog.stmts so generate_c can attempt value-JIT for __main__
+    const Block* main_stmts = &prog.stmts;
     std::string src = generate_c(fns, ifns, ffns, main_stmts, main_int, main_float, main_mixed, mix_vt, main_list, mix_lv, lfns, spec_ctx);
 
     uint64_t h = fnv1a(src);
@@ -2992,9 +4067,20 @@ JitModule* jit_compile(const Program& prog)
         mod->fns["__main__"].main_fn = reinterpret_cast<JitMainFn>(load_sym("syn_jit_m___main__"));
     if (main_list)
         mod->fns["__main__"].main_fn = reinterpret_cast<JitMainFn>(load_sym("syn_jit_l___main__"));
+    // Value-typed __main__ fallback (when no other main JIT applies)
+    if (!mod->fns["__main__"].main_fn) {
+        auto* vfn = reinterpret_cast<JitMainFn>(load_sym("syn_jitv___main__"));
+        if (vfn) mod->fns["__main__"].main_fn = vfn;
+    }
+    // Closure body JIT: registered under the VM's name for anonymous functions
+    {
+        auto* cfn = reinterpret_cast<JitClosureFn>(load_sym("syn_jitcl__fn_"));
+        if (cfn) mod->fns["<fn>"].closure_fn = cfn;
+    }
 
     bool any = false;
-    for (auto& [n, e] : mod->fns) if (e.int_fn || e.float_fn || e.main_fn || e.value_fn) { any = true; break; }
+    for (auto& [n, e] : mod->fns)
+        if (e.int_fn || e.float_fn || e.main_fn || e.value_fn || e.closure_fn) { any = true; break; }
     if (!any) { delete mod; return nullptr; }
     return mod;
 }

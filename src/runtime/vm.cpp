@@ -505,6 +505,21 @@ void VM::close_upvalues(Value* last)
 
 // ── Call dispatch ────────────────────────────────────────────────────────────
 
+Value VM::call_fn(Value callee, int nargs, Value* args)
+{
+    // JIT callers may pass nullptr for no-arg calls; provide a valid stack base.
+    if (!args) args = m_stack + 1;
+    Value result = call_value(callee, nargs, args);
+    // call_value double-decrements m_frame_count (RETURN_* decrements inside run_frame,
+    // then call_value also decrements). Re-balance so JIT callers see stable state.
+    ++m_frame_count;
+    return result;
+}
+Value VM::get_global(const std::string& name) const {
+    auto it = m_globals.find(name);
+    return it != m_globals.end() ? it->second : Value::none_val();
+}
+
 Value VM::call_value(Value callee, int nargs, Value* args)
 {
     if (!callee.is_ptr()) throw std::runtime_error("cannot call non-function");
@@ -1019,6 +1034,13 @@ Value VM::run_frame(CallFrame& outer_frame)
                     cl->jit_cache = je;
                 }
                 if (reinterpret_cast<uintptr_t>(je) > 1) {
+                    if (je->closure_fn) {
+                        // Closure body JIT: passes upvalue array directly, avoids frame setup.
+                        Value r = je->closure_fn(nargs, &REGS[a + 1],
+                                                  reinterpret_cast<void**>(cl->upvalues.data()));
+                        if (nret > 0) REGS[a] = r;
+                        break;
+                    }
                     if (je->value_fn) {
                         // Generic value JIT: handles any arg types natively.
                         Value r = je->value_fn(nargs, &REGS[a + 1]);

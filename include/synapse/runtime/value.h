@@ -112,8 +112,61 @@ struct ObjString : Obj {
     explicit ObjString(std::string s);
 };
 
+// Small-buffer vector for ObjList: holds first 2 Values inline (no heap alloc
+// for lists of ≤2 elements), then spills to heap. Critical for linked_list
+// performance: saves 1 malloc per 2-element node (struct+buf → struct only).
+struct ListItems {
+    static constexpr uint32_t INLINE_CAP = 2;
+    Value    _buf[INLINE_CAP];        // inline storage, always part of the struct
+    Value*   _data;                   // points to _buf (small) or heap (large)
+    uint32_t _size = 0;
+    uint32_t _cap  = INLINE_CAP;
+
+    ListItems() noexcept : _data(_buf) {}
+    ListItems(const ListItems&) = delete;
+    ListItems& operator=(const ListItems&) = delete;
+    ~ListItems() { if (_data != _buf) delete[] _data; }
+
+    bool     empty()  const noexcept { return _size == 0; }
+    uint32_t size()   const noexcept { return _size; }
+    Value*   begin()        noexcept { return _data; }
+    Value*   end()          noexcept { return _data + _size; }
+    const Value* begin() const noexcept { return _data; }
+    const Value* end()   const noexcept { return _data + _size; }
+    Value& operator[](size_t i)       noexcept { return _data[i]; }
+    const Value& operator[](size_t i) const noexcept { return _data[i]; }
+    Value& back()       noexcept { return _data[_size - 1]; }
+    const Value& back() const noexcept { return _data[_size - 1]; }
+    Value& at(size_t i) {
+        if (i >= _size) throw std::out_of_range("list index out of range");
+        return _data[i];
+    }
+
+    void clear()            noexcept { _size = 0; }
+    void pop_back()         noexcept { if (_size) --_size; }
+    void push_back(const Value& v)   { if (_size == _cap) _grow(); _data[_size++] = v; }
+
+    void assign(const Value* first, const Value* last) {
+        size_t n = size_t(last - first);
+        if (n > _cap) _reserve_exact(n);
+        if (n) std::memcpy(_data, first, n * sizeof(Value));
+        _size = uint32_t(n);
+    }
+    void reserve(size_t n) { if (n > _cap) _reserve_exact(n); }
+
+private:
+    void _grow() { _reserve_exact(_cap == 0 ? INLINE_CAP : size_t(_cap) * 2); }
+    void _reserve_exact(size_t nc) {
+        Value* nd = new Value[nc];
+        if (_size) std::memcpy(nd, _data, _size * sizeof(Value));
+        if (_data != _buf) delete[] _data;
+        _data = nd;
+        _cap = uint32_t(nc);
+    }
+};
+
 struct ObjList : Obj {
-    std::vector<Value> items;
+    ListItems items;
     ObjList() { kind = ObjKind::List; }
 };
 

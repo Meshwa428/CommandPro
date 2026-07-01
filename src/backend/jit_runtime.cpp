@@ -11,11 +11,19 @@
 // just bumps m_alloc_count; collection happens after control returns to the loop.
 #include "synapse/runtime/vm.h"
 #include "synapse/runtime/value.h"
+#include "synapse/runtime/chunk.h"
+#include <unordered_map>
+#include <string>
 
 using namespace syn;
 
 static inline uint64_t R(Value v) { return v.raw; }
 static inline Value    V(uint64_t r) { Value v; v.raw = r; return v; }
+
+// JIT-local list pool: ObjLists created by JIT code are kept here instead of
+// in m_gc_list so GC doesn't interfere mid-JIT. syn_rt_list_recycle puts them
+// back; syn_rt_list_new_jit takes from here first. Drained after JIT __main__ exits.
+static thread_local ObjList* tls_jit_list_pool = nullptr;
 
 extern "C" {
 
@@ -50,6 +58,46 @@ uint64_t syn_rt_list_new(const uint64_t* elems, int n) {
     return R(Value::from_ptr(l));
 }
 
+// obj[key] = val for list (int key) or map (any key)
+void syn_rt_index_set(uint64_t obj_, uint64_t key_, uint64_t val_) {
+    Value obj = V(obj_), key = V(key_), val = V(val_);
+    if (val_is_map(obj)) { as_map(obj).set(key, val); return; }
+    if (obj.is_ptr()) {
+        Obj* o = obj.as_ptr();
+        if (o->kind == ObjKind::List || o->kind == ObjKind::Tuple) {
+            auto& v = static_cast<ObjList*>(o)->items;
+            int64_t idx = key.as_int();
+            if (idx < 0) idx += int64_t(v.size());
+            if (idx >= 0 && idx < int64_t(v.size())) v[size_t(idx)] = val;
+        }
+    }
+}
+
+void syn_rt_append(uint64_t list_, uint64_t val_) {
+    Value list = V(list_);
+    if (val_is_list(list)) as_list(list).items.push_back(V(val_));
+}
+
+void syn_rt_list_reserve(uint64_t list_, uint32_t n) {
+    Value list = V(list_);
+    if (val_is_list(list)) as_list(list).items.reserve(n);
+}
+
+uint64_t syn_rt_len(uint64_t obj_) {
+    Value obj = V(obj_);
+    if (val_is_string(obj)) return R(Value::from_int(int64_t(as_str(obj).data.size())));
+    if (obj.is_ptr()) {
+        Obj* o = obj.as_ptr();
+        if (o->kind == ObjKind::List || o->kind == ObjKind::Tuple)
+            return R(Value::from_int(int64_t(static_cast<ObjList*>(o)->items.size())));
+        if (o->kind == ObjKind::Map)
+            return R(Value::from_int(int64_t(static_cast<ObjMap*>(o)->pairs.size())));
+    }
+    return R(Value::from_int(0));
+}
+
+uint64_t syn_rt_map_new() { return R(Value::from_ptr(tls_vm->alloc_map())); }
+
 // obj[key]: list/tuple (int key) or map (any key)
 uint64_t syn_rt_index(uint64_t obj_, uint64_t key_) {
     Value obj = V(obj_), key = V(key_);
@@ -65,6 +113,153 @@ uint64_t syn_rt_index(uint64_t obj_, uint64_t key_) {
         }
     }
     return R(Value::none_val());
+}
+
+// Print a single value (matching Synapse's print() semantics, without newline)
+static void _print_val(Value v) {
+    std::string s = val_to_string(v);
+    fputs(s.c_str(), stdout);
+}
+
+uint64_t syn_rt_str_lit(const char* s, int n) {
+    return R(Value::from_ptr(tls_vm->alloc_string(s, size_t(n))));
+}
+
+// Create a JIT-compiled closure without going through the interpreter.
+// Finds the N-th ObjFunction constant inside outer_fn_name's bytecode,
+// wraps upval values as closed ObjUpvalues, and returns the new ObjClosure.
+// Key is (literal_ptr, nth) — stable because string literals live in the .so.
+struct PtrIntHash {
+    size_t operator()(const std::pair<const char*, int>& k) const {
+        return std::hash<uintptr_t>{}((uintptr_t)k.first) ^ ((size_t)k.second * 2654435761u);
+    }
+};
+using InnerFnMap = std::unordered_map<std::pair<const char*, int>, ObjFunction*, PtrIntHash>;
+static thread_local InnerFnMap* tls_inner_fn_cache = nullptr;
+
+uint64_t syn_rt_make_closure(const char* outer_fn_name, int nth_fn, int n_upvals, const uint64_t* upval_vals) {
+    ObjFunction* inner_fn = nullptr;
+    auto key = std::make_pair(outer_fn_name, nth_fn);
+    if (tls_inner_fn_cache) {
+        auto it = tls_inner_fn_cache->find(key);
+        if (it != tls_inner_fn_cache->end()) inner_fn = it->second;
+    }
+    if (!inner_fn) {
+        // First call: walk outer function's constants to find the Nth inner ObjFunction
+        Value outer_val = tls_vm->get_global(outer_fn_name);
+        if (!outer_val.is_ptr() || outer_val.as_ptr()->kind != ObjKind::Closure) return R(Value::none_val());
+        ObjFunction* outer_fn = static_cast<ObjClosure*>(outer_val.as_ptr())->fn;
+        int count = 0;
+        for (auto& cv : outer_fn->chunk->constants) {
+            if (cv.is_ptr() && cv.as_ptr()->kind == ObjKind::Function) {
+                if (count == nth_fn) { inner_fn = static_cast<ObjFunction*>(cv.as_ptr()); break; }
+                ++count;
+            }
+        }
+        if (!inner_fn) return R(Value::none_val());
+        if (!tls_inner_fn_cache) tls_inner_fn_cache = new InnerFnMap();
+        (*tls_inner_fn_cache)[key] = inner_fn;
+    }
+    ObjClosure* cl = tls_vm->alloc<ObjClosure>(inner_fn);
+    for (int i = 0; i < n_upvals && i < (int)cl->upvalues.size(); ++i) {
+        ObjUpvalue* uv = tls_vm->alloc<ObjUpvalue>(nullptr);
+        uv->closed = V(upval_vals[i]);
+        uv->is_closed = true;
+        cl->upvalues[i] = uv;
+    }
+    return R(Value::from_ptr(cl));
+}
+
+// JIT-local list allocation: bypasses GC list so GC won't touch these mid-JIT.
+// Takes from tls_jit_list_pool (pre-warmed on reuse) or allocates fresh.
+uint64_t syn_rt_list_new_jit(uint32_t reserve_n) {
+    ObjList* l;
+    if (tls_jit_list_pool) {
+        l = tls_jit_list_pool;
+        tls_jit_list_pool = (ObjList*)l->gc_next;
+        l->gc_next = nullptr;
+        l->kind = ObjKind::List;
+        l->items.clear();  // preserves allocated capacity
+    } else {
+        l = new ObjList();
+        l->gc_next = nullptr;  // not in m_gc_list
+    }
+    if (reserve_n > l->items._cap)
+        l->items.reserve(reserve_n);
+    return R(Value::from_ptr(l));
+}
+
+// Return a JIT-local list to the pool. Items are cleared (capacity preserved).
+void syn_rt_list_recycle(uint64_t list_) {
+    Value list = V(list_);
+    if (!list.is_ptr() || list.as_ptr()->kind != ObjKind::List) return;
+    ObjList* l = static_cast<ObjList*>(list.as_ptr());
+    l->items.clear();
+    l->gc_next = (Obj*)tls_jit_list_pool;
+    tls_jit_list_pool = l;
+}
+
+// Drain the JIT list pool after JIT __main__ exits.
+void syn_rt_drain_jit_pool() {
+    ObjList* p = tls_jit_list_pool;
+    while (p) { ObjList* next = (ObjList*)p->gc_next; delete p; p = next; }
+    tls_jit_list_pool = nullptr;
+}
+
+void syn_rt_print1(uint64_t v_) { _print_val(V(v_)); fputc('\n', stdout); }
+
+void syn_rt_print_n(const uint64_t* args, int n) {
+    for (int i = 0; i < n; ++i) { if (i) fputc(' ', stdout); _print_val(V(args[i])); }
+    fputc('\n', stdout);
+}
+
+// Fast closure call: checks jit_cache, falls back to interpreter.
+// For use by value-JIT'd __main__ code calling closure variables.
+uint64_t syn_rt_call_jitcl(uint64_t callee_, int nargs, const uint64_t* args_) {
+    Value callee = V(callee_);
+    if (!callee.is_ptr()) return R(Value::none_val());
+    Obj* obj = callee.as_ptr();
+    if (obj->kind != ObjKind::Closure) return R(tls_vm->call_fn(callee, nargs, (Value*)args_));
+    ObjClosure* cl = static_cast<ObjClosure*>(obj);
+    JitEntry* je = static_cast<JitEntry*>(cl->jit_cache);
+    if (je == nullptr) {
+        auto it = tls_vm->m_jit.find(cl->fn->name);
+        je = (it != tls_vm->m_jit.end()) ? &it->second : reinterpret_cast<JitEntry*>(uintptr_t(1));
+        cl->jit_cache = je;
+    }
+    if (reinterpret_cast<uintptr_t>(je) > 1 && je->closure_fn)
+        return R(je->closure_fn(nargs, (Value*)args_,
+                                reinterpret_cast<void**>(cl->upvalues.data())));
+    return R(tls_vm->call_fn(callee, nargs, (Value*)args_));
+}
+
+// Generic value call: call any Value through the interpreter.
+// Used by value-JIT'd code to call named functions not in vfns.
+uint64_t syn_rt_call_val(uint64_t callee_, int nargs, const uint64_t* args_) {
+    return R(tls_vm->call_fn(V(callee_), nargs, (Value*)args_));
+}
+
+// Look up a global by name, for value-JIT'd code calling non-JIT functions.
+uint64_t syn_rt_get_global(const char* name) {
+    return R(tls_vm->get_global(name));
+}
+
+// In-place string append: x = x + rhs, no new ObjString allocation.
+// For string + string: appends rhs into *dst in-place (amortized O(1)).
+// For other types: falls back to val_add (may allocate — safe only outside tight loops).
+void syn_rt_str_inplace_add(uint64_t* dst, uint64_t rhs_) {
+    Value d = V(*dst), r = V(rhs_);
+    if (val_is_string(d) && val_is_string(r)) {
+        as_str(d).data.append(as_str(r).data);
+        as_str(d).hash = 0;
+        return;
+    }
+    Value res = val_add(d, r);
+    *dst = R(res);
+    if (res.is_ptr()) {
+        Obj* o = res.as_ptr(); o->gc_next = tls_vm->m_gc_list; tls_vm->m_gc_list = o;
+        ++tls_vm->m_alloc_count;
+    }
 }
 
 } // extern "C"
