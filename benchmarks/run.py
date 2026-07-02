@@ -88,10 +88,15 @@ def main():
     build_preset = "release" if use_release else "debug"
     syn_bin = os.path.join(REPO_DIR, "build", build_preset, "syn")
 
-    if not os.path.exists(syn_bin):
-        print(f"syn binary not found at {syn_bin}")
-        print(f"Run: cmake --build --preset {build_preset}")
+    print(f"Building syn ({build_preset})...")
+    build = subprocess.run(
+        ["cmake", "--build", "--preset", build_preset],
+        cwd=REPO_DIR, capture_output=True
+    )
+    if build.returncode != 0:
+        print(build.stderr.decode().strip(), file=sys.stderr)
         sys.exit(1)
+    print("Build OK\n")
 
     # Pre-compile all C++ benchmarks
     cpp_bins: dict[str, str | None] = {}
