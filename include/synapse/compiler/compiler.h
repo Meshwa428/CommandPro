@@ -21,8 +21,11 @@ class Compiler {
 public:
     // Compile a full program into a top-level ObjFunction.
     // Returns null on error.
+    // module_mode=true: top-level fn/let/const also emit SET_GLOBAL so their
+    // values persist after the __main__ frame exits (needed for use/import).
     static ObjFunction* compile(const Program& prog, const Source& src,
-                                DiagEngine& diag, VM& vm);
+                                DiagEngine& diag, VM& vm,
+                                bool module_mode = false);
 
 private:
     // ── Local variable tracking ───────────────────────────────────────────────
@@ -149,6 +152,7 @@ private:
     DiagEngine&   m_diag;
     VM&           m_vm;
     FnState*      m_current = nullptr;
+    bool          m_module_mode = false;
 };
 
 } // namespace syn

@@ -4,7 +4,9 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 
+#include "synapse/frontend/ast.h"
 #include "synapse/frontend/lexer.h"
 #include "synapse/frontend/parser.h"
 #include "synapse/compiler/compiler.h"
@@ -263,6 +265,142 @@ static void register_stdlib(syn::VM& vm)
     });
 }
 
+// ── Module loading ────────────────────────────────────────────────────────────
+
+static std::string dir_of(const std::string& path)
+{
+    auto pos = path.find_last_of("/\\");
+    return pos == std::string::npos ? "" : path.substr(0, pos);
+}
+
+static std::string path_join(const std::string& dir, const std::string& name)
+{
+    return dir.empty() ? name : dir + "/" + name;
+}
+
+static std::string abs_path(const std::string& p)
+{
+    char buf[4096];
+    return realpath(p.c_str(), buf) ? std::string(buf) : p;
+}
+
+static std::string read_file_str(const std::string& path)
+{
+    std::ifstream f(path);
+    if (!f) return "";
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+// Resolve a UseEntry to an absolute file path; returns "" if not found.
+static std::string resolve_module(const syn::UseEntry& entry, const std::string& base_dir)
+{
+    auto try_path = [](const std::string& p) -> std::string {
+        std::ifstream f(p);
+        return f ? p : "";
+    };
+
+    if (entry.is_str_ref) {
+        // Strip surrounding quotes from raw token text
+        std::string name = entry.module_str;
+        if (name.size() >= 2 && name.front() == '"') name = name.substr(1, name.size() - 2);
+        if (name.find('.') == std::string::npos) name += ".syn";
+        return try_path(path_join(base_dir, name));
+    } else {
+        // Dotted ident: utils.io → utils/io.syn
+        std::string rel;
+        for (size_t i = 0; i < entry.module_path.size(); ++i) {
+            if (i) rel += "/";
+            rel += entry.module_path[i];
+        }
+        rel += ".syn";
+        // 1. Relative to current file's dir
+        if (auto r = try_path(path_join(base_dir, rel)); !r.empty()) return r;
+        // 2. std/ subdir next to current file
+        if (auto r = try_path(path_join(base_dir + "/std", rel)); !r.empty()) return r;
+        return "";
+    }
+}
+
+// Forward declaration
+static void load_modules(const syn::Program& prog, const std::string& base_dir,
+                         syn::VM& vm, std::unordered_set<std::string>& loaded);
+static void run_in_vm(const std::string& path, const std::string& src,
+                      syn::VM& vm, std::unordered_set<std::string>& loaded);
+
+// Execute all UseStmt entries in prog, recursively loading dependencies.
+static void load_modules(const syn::Program& prog, const std::string& base_dir,
+                         syn::VM& vm, std::unordered_set<std::string>& loaded)
+{
+    for (auto& stmt : prog.stmts) {
+        auto* use = dynamic_cast<const syn::UseStmt*>(stmt.get());
+        if (!use) continue;
+        for (auto& entry : use->entries) {
+            std::string mod_path = resolve_module(entry, base_dir);
+            if (mod_path.empty()) {
+                std::string name = entry.is_str_ref
+                    ? entry.module_str
+                    : (entry.module_path.empty() ? "?" : entry.module_path[0]);
+                std::cerr << "syn: module '" << name << "' not found\n";
+                continue;
+            }
+            std::string key = abs_path(mod_path);
+            if (loaded.count(key)) continue;  // already loaded or circular
+
+            std::string src = read_file_str(mod_path);
+            if (src.empty()) {
+                std::cerr << "syn: cannot read '" << mod_path << "'\n";
+                continue;
+            }
+
+            // Snapshot before for aliased import
+            auto before = entry.alias.empty() ? std::unordered_set<std::string>{}
+                                              : vm.globals_snapshot();
+            loaded.insert(key);
+            run_in_vm(mod_path, src, vm, loaded);
+
+            // Aliased: collect new globals into a map, bind as alias
+            if (!entry.alias.empty()) {
+                auto ng = vm.new_globals_since(before);
+                syn::ObjMap* ns = vm.alloc_map();
+                for (auto& [k, v] : ng)
+                    ns->set(syn::Value::from_ptr(vm.intern_string(k.data(), k.size())), v);
+                vm.define_global(entry.alias, syn::Value::from_ptr(ns));
+            }
+        }
+    }
+}
+
+// Parse, load dependencies, compile and interpret a single file into vm.
+static void run_in_vm(const std::string& path, const std::string& src,
+                      syn::VM& vm, std::unordered_set<std::string>& loaded)
+{
+    syn::Source    source(path, src);
+    syn::Lexer     lexer(source);
+    auto           tokens = lexer.tokenize();
+    if (lexer.has_errors()) { lexer.diag().print_all(source); std::exit(1); }
+
+    syn::Parser  parser(tokens, source);
+    syn::Program prog = parser.parse();
+    if (parser.has_errors()) { parser.diag().print_all(source); std::exit(1); }
+
+    load_modules(prog, dir_of(path), vm, loaded);
+
+    syn::DiagEngine compile_diag;
+    // module_mode=true: top-level fn/let/const also emit SET_GLOBAL
+    syn::ObjFunction* fn = syn::Compiler::compile(prog, source, compile_diag, vm, true);
+    if (!fn || compile_diag.has_errors()) { compile_diag.print_all(source); std::exit(1); }
+
+    try { vm.run(fn); }
+    catch (const std::exception& ex) {
+        std::cerr << "RuntimeError: " << ex.what() << '\n';
+        std::exit(1);
+    }
+}
+
+// ── Main entry point ──────────────────────────────────────────────────────────
+
 static syn::Value run_source(const std::string& path, const std::string& src,
                               bool disasm_mode = false)
 {
@@ -285,7 +423,12 @@ static syn::Value run_source(const std::string& path, const std::string& src,
     syn::VM vm;
     register_stdlib(vm);
 
-    // Bytecode compile always (needed for disasm + interpreter fallback + globals predecl)
+    // Load modules before compiling main file
+    std::unordered_set<std::string> loaded;
+    if (!path.empty() && path != "<repl>") loaded.insert(abs_path(path));
+    load_modules(prog, dir_of(path), vm, loaded);
+
+    // Bytecode compile (UseStmts are silently skipped by compiler)
     syn::DiagEngine compile_diag;
     syn::ObjFunction* fn = syn::Compiler::compile(prog, source, compile_diag, vm);
     if (!fn || compile_diag.has_errors()) {
@@ -294,7 +437,6 @@ static syn::Value run_source(const std::string& path, const std::string& src,
     }
 
     // JIT compile pure-int/float functions + top-level __main__ if possible
-    // SYN_NO_JIT set disables the JIT entirely (debugging / interpreter fallback).
     static const bool no_jit = std::getenv("SYN_NO_JIT") != nullptr;
     static std::unique_ptr<syn::JitModule> jit_mod;
     if (!no_jit && !jit_mod) jit_mod.reset(syn::jit_compile(prog));
@@ -302,10 +444,6 @@ static syn::Value run_source(const std::string& path, const std::string& src,
         for (auto& [name, entry] : jit_mod->fns)
             vm.m_jit[name] = entry;
 
-        // If __main__ is JIT'd, bypass interpreter entirely.
-        // Pre-register top-level functions as globals so JIT __main__ can call them via
-        // syn_rt_get_global. Scan the main chunk's constant pool for 0-upvalue ObjFunctions;
-        // create a bare ObjClosure for each and store under its name.
         auto mit = vm.m_jit.find("__main__");
         if (mit != vm.m_jit.end() && mit->second.main_fn && !disasm_mode) {
             {
@@ -319,12 +457,11 @@ static syn::Value run_source(const std::string& path, const std::string& src,
                     vm.define_global(pfn->name, syn::Value::from_ptr(cl));
                 }
             }
-            syn::tls_vm = &vm;  // value-JIT helpers need tls_vm for allocation
+            syn::tls_vm = &vm;
             try { mit->second.main_fn(0, nullptr); } catch (const std::exception& ex) {
                 syn::tls_vm = nullptr;
                 std::cerr << "RuntimeError: " << ex.what() << '\n'; std::exit(1);
             }
-            // Drain the JIT-local list pool (lists bypassed m_gc_list, must be freed manually)
             syn_rt_drain_jit_pool();
             syn::tls_vm = nullptr;
             return syn::Value::none_val();
@@ -346,14 +483,12 @@ static syn::Value run_source(const std::string& path, const std::string& src,
 
 static void run_file(const std::string& path, bool disasm_mode = false)
 {
-    std::ifstream f(path);
-    if (!f) {
+    std::string src = read_file_str(path);
+    if (src.empty() && !std::ifstream(path)) {
         std::cerr << "syn: cannot open '" << path << "'\n";
         std::exit(1);
     }
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    run_source(path, ss.str(), disasm_mode);
+    run_source(path, src, disasm_mode);
 }
 
 static void repl()

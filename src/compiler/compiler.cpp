@@ -11,9 +11,10 @@ namespace syn {
 // ── Public entry point ────────────────────────────────────────────────────────
 
 ObjFunction* Compiler::compile(const Program& prog, const Source& src,
-                               DiagEngine& diag, VM& vm)
+                               DiagEngine& diag, VM& vm, bool module_mode)
 {
     Compiler c(src, diag, vm);
+    c.m_module_mode = module_mode;
     return c.compile_program(prog);
 }
 
@@ -108,6 +109,7 @@ void Compiler::compile_stmt(const StmtNode* stmt)
 
 void Compiler::compile_let(const LetStmt* stmt)
 {
+    bool export_global = m_module_mode && m_current->enclosing == nullptr;
     if (stmt->bind_kind == LetBindKind::Simple) {
         int slot = declare_local(stmt->names[0]);
         int src = -1;
@@ -117,6 +119,8 @@ void Compiler::compile_let(const LetStmt* stmt)
             emit(enc_I(Op::LOAD_NONE, uint8_t(slot), 0));
         ensure_reg(src, slot);
         mark_initialized(slot);
+        if (export_global)
+            emit(enc_I(Op::SET_GLOBAL, uint8_t(slot), int64_t(add_str_const(stmt->names[0]))));
     } else {
         // tuple/list destructuring
         int rhs = alloc_reg();
@@ -126,6 +130,8 @@ void Compiler::compile_let(const LetStmt* stmt)
             int slot = declare_local(stmt->names[i]);
             emit(enc_RI(Op::GETI, uint8_t(slot), uint8_t(rhs), int64_t(i)));
             mark_initialized(slot);
+            if (export_global)
+                emit(enc_I(Op::SET_GLOBAL, uint8_t(slot), int64_t(add_str_const(stmt->names[i]))));
         }
         free_reg();
     }
@@ -136,6 +142,8 @@ void Compiler::compile_const(const ConstStmt* stmt)
     int slot = declare_local(stmt->name);
     compile_expr(stmt->value.get(), slot);
     mark_initialized(slot);
+    if (m_module_mode && m_current->enclosing == nullptr)
+        emit(enc_I(Op::SET_GLOBAL, uint8_t(slot), int64_t(add_str_const(stmt->name))));
 }
 
 void Compiler::compile_assign(const AssignStmt* stmt)
@@ -457,6 +465,10 @@ void Compiler::compile_fn_decl(const FnDeclStmt* stmt)
     // Upvalue descriptor instructions read by VM's CLOSURE handler (one per upvalue)
     for (auto& uv : inner_upvalues)
         emit(enc_R(Op::NOP, uint8_t(uv.is_local ? 1 : 0), uint8_t(uv.index)));
+
+    // Module mode: publish function as a global so it persists after __main__ exits
+    if (m_module_mode && m_current->enclosing == nullptr)
+        emit(enc_I(Op::SET_GLOBAL, uint8_t(dest), int64_t(add_str_const(stmt->name))));
 }
 
 void Compiler::compile_try(const TryStmt* stmt)

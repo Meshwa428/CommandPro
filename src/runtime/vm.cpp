@@ -108,6 +108,23 @@ ObjString* VM::alloc_string_raw()
     return obj;
 }
 
+std::unordered_set<std::string> VM::globals_snapshot() const
+{
+    std::unordered_set<std::string> s;
+    s.reserve(m_globals.size());
+    for (auto& [k, _] : m_globals) s.insert(k);
+    return s;
+}
+
+std::unordered_map<std::string, Value> VM::new_globals_since(
+    const std::unordered_set<std::string>& before) const
+{
+    std::unordered_map<std::string, Value> result;
+    for (auto& [k, v] : m_globals)
+        if (!before.count(k)) result[k] = v;
+    return result;
+}
+
 ObjString* VM::intern_string(const char* data, size_t len)
 {
     uint32_t h = 2166136261u;
@@ -329,6 +346,12 @@ void VM::collect_garbage()
 
 Value VM::invoke_method_str(Value obj, const std::string& name, int nargs, Value* args)
 {
+    // Map field call: math.add(10, 20) → fetch "add" from map, then call it
+    if (val_is_map(obj)) {
+        ObjString* ks = intern_string(name.data(), name.size());
+        Value fn = as_map(obj).get(Value::from_ptr(ks));
+        return call_fn(fn, nargs, args);
+    }
     MethodId mid = resolve_method_id(name);
     return invoke_method(obj, mid, nargs, args);
 }
@@ -865,7 +888,7 @@ Value VM::run_frame(CallFrame& outer_frame)
         }
         case Op::GET_FIELDK: {
             uint8_t a=INS_A(w),b=INS_B(w);
-            Value key = ck->constants[INS_IMM48(w)];
+            Value key = ck->constants[INS_IMM40(w)];
             Value obj = REGS[b];
             if (!val_is_map(obj)) throw std::runtime_error("field access on non-map");
             ObjMap& m = as_map(obj);
@@ -895,7 +918,7 @@ Value VM::run_frame(CallFrame& outer_frame)
         }
         case Op::SET_FIELDK: {
             uint8_t a=INS_A(w),b=INS_B(w);
-            Value key = ck->constants[INS_IMM48(w)];
+            Value key = ck->constants[INS_IMM40(w)];
             if (!val_is_map(REGS[b])) throw std::runtime_error("field assign on non-map");
             ObjMap& m = as_map(REGS[b]);
             if (!m.str_idx && !m.int_idx) {
@@ -1262,6 +1285,7 @@ Value VM::run_frame(CallFrame& outer_frame)
         case Op::NOP: break;
 
         case Op::HALT: {
+            close_upvalues(regs);  // close any upvalues still open (e.g. self-capturing fns)
             frame->pc = pc;
             return REGS[0];
         }

@@ -2,6 +2,7 @@
 #include <vector>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include "synapse/runtime/value.h"
 #include "synapse/runtime/opcodes.h"
 #include "synapse/backend/jit.h"
@@ -65,6 +66,11 @@ public:
 
     // Intern table: one ObjString per unique content; pointer equality = content equality
     ObjString* intern_string(const char* data, size_t len);
+
+    // Module loading support
+    std::unordered_set<std::string> globals_snapshot() const;
+    std::unordered_map<std::string, Value> new_globals_since(
+        const std::unordered_set<std::string>& before) const;
 
     ObjList* alloc_list();
     ObjMap*  alloc_map();
