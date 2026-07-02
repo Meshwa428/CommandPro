@@ -318,7 +318,8 @@ void VM::collect_garbage()
                 auto* m = static_cast<ObjMap*>(o);
                 m->pairs.clear();
                 delete m->str_idx; m->str_idx = nullptr;
-                delete m->int_idx; m->int_idx = nullptr;
+                delete[] m->int_flat; m->int_flat = nullptr;
+                m->int_flat_cap = m->int_flat_count = 0;
                 m->gc_next = m_map_pool;
                 m_map_pool = m;
                 break;
@@ -892,7 +893,7 @@ Value VM::run_frame(CallFrame& outer_frame)
             Value obj = REGS[b];
             if (!val_is_map(obj)) throw std::runtime_error("field access on non-map");
             ObjMap& m = as_map(obj);
-            if (!m.str_idx && !m.int_idx) {
+            if (!m.str_idx && !m.int_flat) {
                 // Small map: monomorphic inline cache
                 size_t ins_off = size_t(pc - 1 - ck->code.data());
                 uint32_t cached = ck->field_cache[ins_off];
@@ -921,7 +922,7 @@ Value VM::run_frame(CallFrame& outer_frame)
             Value key = ck->constants[INS_IMM40(w)];
             if (!val_is_map(REGS[b])) throw std::runtime_error("field assign on non-map");
             ObjMap& m = as_map(REGS[b]);
-            if (!m.str_idx && !m.int_idx) {
+            if (!m.str_idx && !m.int_flat) {
                 // Small map: monomorphic inline cache (fast update of existing key)
                 size_t ins_off = size_t(pc - 1 - ck->code.data());
                 uint32_t cached = ck->field_cache[ins_off];

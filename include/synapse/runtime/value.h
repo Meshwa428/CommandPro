@@ -114,11 +114,11 @@ struct ObjString : Obj {
     ObjString(std::string s, uint32_t h);  // intern-path ctor (hash pre-computed)
 };
 
-// Small-buffer vector for ObjList: holds first 2 Values inline (no heap alloc
-// for lists of ≤2 elements), then spills to heap. Critical for linked_list
-// performance: saves 1 malloc per 2-element node (struct+buf → struct only).
+// Small-buffer vector for ObjList: holds first 4 Values inline (no heap alloc
+// for lists of ≤4 elements). 4 covers 2-element nodes (linked_list) and
+// 3-element tuples (binary_trees) without spilling. ObjList = 64 bytes = 1 cache line.
 struct ListItems {
-    static constexpr uint32_t INLINE_CAP = 2;
+    static constexpr uint32_t INLINE_CAP = 4;
     Value    _buf[INLINE_CAP];        // inline storage, always part of the struct
     Value*   _data;                   // points to _buf (small) or heap (large)
     uint32_t _size = 0;
@@ -175,12 +175,19 @@ struct ObjList : Obj {
 struct ObjMap : Obj {
     std::vector<std::pair<Value,Value>> pairs;  // canonical storage; GC/keys()/values() use this
     // Hash indexes: allocated lazily once map exceeds HASH_THRESHOLD entries.
-    // ponytail: linear scan beats hash for ≤16 entries; unordered_map overhead kills small maps
+    // ponytail: linear scan beats hash for ≤16 entries
     static constexpr size_t HASH_THRESHOLD = 16;
-    std::unordered_map<std::string, size_t>* str_idx = nullptr;
-    std::unordered_map<int64_t,    size_t>*  int_idx = nullptr;
+    std::unordered_map<std::string, size_t>* str_idx  = nullptr;
+    // Flat open-addressing table for int keys: faster than std::unordered_map
+    // (no pointer-chasing, sequential probing, cache-line friendly).
+    // key == INT64_MIN is the empty-slot sentinel.
+    // key == INT64_MIN is the empty-slot sentinel.
+    struct FlatIntSlot { int64_t key; uint32_t pairs_idx; uint32_t _pad; };
+    FlatIntSlot* int_flat      = nullptr;
+    uint32_t     int_flat_cap  = 0;  // always power of 2
+    uint32_t     int_flat_count = 0;
     ObjMap() { kind = ObjKind::Map; }
-    ~ObjMap() { delete str_idx; delete int_idx; }
+    ~ObjMap() { delete str_idx; delete[] int_flat; }
     Value get(Value key) const;
     void  set(Value key, Value val);
     void  build_index();  // called once when crossing HASH_THRESHOLD

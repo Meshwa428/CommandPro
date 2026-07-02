@@ -33,16 +33,62 @@ ObjString::ObjString(std::string s, uint32_t h) : data(std::move(s)), hash(h)
     kind = ObjKind::String;
 }
 
-// ── ObjMap ────────────────────────────────────────────────────────────────────
+// ── ObjMap flat int hash helpers ──────────────────────────────────────────────
+
+static inline uint32_t flat_int_hash(int64_t k)
+{
+    // Fibonacci/Knuth multiplicative hash — good distribution for sequential ints
+    return uint32_t(uint64_t(k) * 11400714819323198485ULL >> 32);
+}
+
+// Sentinel: INT64_MIN (0x8000000000000000) = empty slot.
+// Valid map keys go through val_from_int which NaN-boxes them; the actual int64_t
+// stored in FlatIntSlot.key can be any value except INT64_MIN as empty marker.
+static constexpr int64_t FLAT_EMPTY = INT64_MIN;
+
+static inline uint32_t flat_int_find_slot(const ObjMap::FlatIntSlot* t,
+                                           uint32_t cap, int64_t key)
+{
+    uint32_t h = flat_int_hash(key) & (cap - 1);
+    while (t[h].key != FLAT_EMPTY && t[h].key != key)
+        h = (h + 1) & (cap - 1);
+    return h;
+}
+
+static void flat_int_grow(ObjMap* m)
+{
+    uint32_t new_cap = m->int_flat_cap * 2;
+    auto* t = new ObjMap::FlatIntSlot[new_cap];
+    for (uint32_t i = 0; i < new_cap; ++i) t[i].key = FLAT_EMPTY;
+    for (uint32_t i = 0; i < m->int_flat_cap; ++i) {
+        if (m->int_flat[i].key != FLAT_EMPTY) {
+            uint32_t s = flat_int_find_slot(t, new_cap, m->int_flat[i].key);
+            t[s] = m->int_flat[i];  // copies key, val, pairs_idx
+        }
+    }
+    delete[] m->int_flat;
+    m->int_flat     = t;
+    m->int_flat_cap = new_cap;
+}
+
+// ── ObjMap methods ────────────────────────────────────────────────────────────
 
 void ObjMap::build_index()
 {
     str_idx = new std::unordered_map<std::string, size_t>();
-    int_idx = new std::unordered_map<int64_t, size_t>();
+    // Flat int table: power-of-2 capacity, start at 32 (> HASH_THRESHOLD=16, <75% load)
+    int_flat_cap   = 32;
+    int_flat_count = 0;
+    int_flat = new FlatIntSlot[32];
+    for (uint32_t i = 0; i < 32; ++i) int_flat[i].key = FLAT_EMPTY;
     for (size_t i = 0; i < pairs.size(); ++i) {
         Value k = pairs[i].first;
         if (val_is_string(k)) (*str_idx)[as_str(k).data] = i;
-        else if (k.is_int())  (*int_idx)[k.as_int()]     = i;
+        else if (k.is_int()) {
+            uint32_t s = flat_int_find_slot(int_flat, int_flat_cap, k.as_int());
+            int_flat[s] = { k.as_int(), uint32_t(i), 0 };
+            ++int_flat_count;
+        }
     }
 }
 
@@ -52,9 +98,9 @@ Value ObjMap::get(Value key) const
         auto it = str_idx->find(as_str(key).data);
         return it == str_idx->end() ? Value::none_val() : pairs[it->second].second;
     }
-    if (int_idx && key.is_int()) {
-        auto it = int_idx->find(key.as_int());
-        return it == int_idx->end() ? Value::none_val() : pairs[it->second].second;
+    if (int_flat && key.is_int()) {
+        uint32_t s = flat_int_find_slot(int_flat, int_flat_cap, key.as_int());
+        return int_flat[s].key == FLAT_EMPTY ? Value::none_val() : pairs[int_flat[s].pairs_idx].second;
     }
     for (auto& [k, v] : pairs)
         if (val_eq(k, key)) return v;
@@ -69,15 +115,15 @@ void ObjMap::set(Value key, Value val)
         if (it != str_idx->end()) { pairs[it->second].second = val; return; }
         (*str_idx)[k] = pairs.size();
         pairs.push_back({key, val});
-        if (pairs.size() == 1) { /* just started */ }
         return;
     }
-    if (int_idx && key.is_int()) {
+    if (int_flat && key.is_int()) {
         int64_t ki = key.as_int();
-        auto it = int_idx->find(ki);
-        if (it != int_idx->end()) { pairs[it->second].second = val; return; }
-        (*int_idx)[ki] = pairs.size();
+        uint32_t s = flat_int_find_slot(int_flat, int_flat_cap, ki);
+        if (int_flat[s].key != FLAT_EMPTY) { pairs[int_flat[s].pairs_idx].second = val; return; }
+        int_flat[s] = { ki, uint32_t(pairs.size()), 0 };
         pairs.push_back({key, val});
+        if (++int_flat_count * 4 > int_flat_cap * 3) flat_int_grow(this);
         return;
     }
     // Linear scan (small map or unsupported key type)

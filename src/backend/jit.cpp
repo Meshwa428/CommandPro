@@ -3164,7 +3164,7 @@ static void try_emit_while_preamble(
         c.o << sp << "  if ((_hv >> 48) == 0xFFFCu) {\n";
         c.o << sp << "    char* _hp = (char*)(uintptr_t)(_hv & 0x0000FFFFFFFFFFFFuLL);\n";
         c.o << sp << "    if (*(unsigned char*)_hp == 1 || *(unsigned char*)_hp == 2)\n";
-        c.o << sp << "      { " << dv << " = *(uint64_t**)(_hp+32); " << lv << " = *(uint32_t*)(_hp+40); } } }\n";
+        c.o << sp << "      { " << dv << " = *(uint64_t**)(_hp+48); " << lv << " = *(uint32_t*)(_hp+56); } } }\n";
         hoist_out[vname] = HoistedList{dv, lv};
     }
 }
@@ -3357,15 +3357,15 @@ static inline int _syn_truthy(uint64_t v) {
 // ObjList layout (after SBO): Obj(16) + ListItems._buf[2](16) + _data*(8) + _size(4) + _cap(4)
 //   _data  at ObjList offset 32  (Value* pointer)
 //   _size  at ObjList offset 40  (uint32_t)
-//   _cap   at ObjList offset 44  (uint32_t)
+//   _cap   at ObjList offset 60  (uint32_t) [INLINE_CAP=4: _buf=32B → _data@48, _size@56, _cap@60]
 // sizeof(Value)=8. Fallback to runtime helpers for maps, strings, or OOB.
 static inline uint64_t _syn_index(uint64_t obj, uint64_t key) {
     if ((obj >> 48) != 0xFFFCu) return syn_rt_index(obj, key);
     char* p = (char*)(uintptr_t)(obj & 0x0000FFFFFFFFFFFFuLL);
     unsigned char kind = *(unsigned char*)p;
     if (kind != 1 && kind != 2) return syn_rt_index(obj, key);
-    uint64_t* data = *(uint64_t**)(p + 32);
-    uint32_t  len  = *(uint32_t*)(p + 40);
+    uint64_t* data = *(uint64_t**)(p + 48);
+    uint32_t  len  = *(uint32_t*)(p + 56);
     int64_t idx = (int64_t)(key << 16) >> 16;
     if (idx < 0) idx += (int64_t)len;
     if ((uint64_t)idx >= (uint64_t)len) return syn_rt_index(obj, key);
@@ -3376,8 +3376,8 @@ static inline void _syn_index_set(uint64_t obj, uint64_t key, uint64_t val) {
     char* p = (char*)(uintptr_t)(obj & 0x0000FFFFFFFFFFFFuLL);
     unsigned char kind = *(unsigned char*)p;
     if (kind != 1 && kind != 2) { syn_rt_index_set(obj, key, val); return; }
-    uint64_t* data = *(uint64_t**)(p + 32);
-    uint32_t  len  = *(uint32_t*)(p + 40);
+    uint64_t* data = *(uint64_t**)(p + 48);
+    uint32_t  len  = *(uint32_t*)(p + 56);
     int64_t idx = (int64_t)(key << 16) >> 16;
     if (idx < 0) idx += (int64_t)len;
     if ((uint64_t)idx >= (uint64_t)len) { syn_rt_index_set(obj, key, val); return; }
@@ -3388,10 +3388,10 @@ static inline void _syn_append(uint64_t list, uint64_t val) {
     if ((list >> 48) != 0xFFFCu) { syn_rt_append(list, val); return; }
     char* p = (char*)(uintptr_t)(list & 0x0000FFFFFFFFFFFFuLL);
     if (*(unsigned char*)p != 1) { syn_rt_append(list, val); return; }
-    uint64_t* data = *(uint64_t**)(p + 32);
-    uint32_t  sz   = *(uint32_t*)(p + 40);
-    uint32_t  cp   = *(uint32_t*)(p + 44);
-    if (sz < cp) { data[sz] = val; *(uint32_t*)(p + 40) = sz + 1; }
+    uint64_t* data = *(uint64_t**)(p + 48);
+    uint32_t  sz   = *(uint32_t*)(p + 56);
+    uint32_t  cp   = *(uint32_t*)(p + 60);
+    if (sz < cp) { data[sz] = val; *(uint32_t*)(p + 56) = sz + 1; }
     else syn_rt_append(list, val);
 }
 // Fast len: reads _size directly for list/tuple, avoids PLT.
@@ -3400,7 +3400,7 @@ static inline uint64_t _syn_len(uint64_t obj) {
     char* p = (char*)(uintptr_t)(obj & 0x0000FFFFFFFFFFFFuLL);
     unsigned char kind = *(unsigned char*)p;
     if (kind != 1 && kind != 2) return syn_rt_len(obj);
-    return VNAN_BASE | (uint64_t)*(uint32_t*)(p + 40);
+    return VNAN_BASE | (uint64_t)*(uint32_t*)(p + 56);
 }
 
 // ObjUpvalue layout: Obj(16) + location*(8) + closed(8) + is_closed(1)
