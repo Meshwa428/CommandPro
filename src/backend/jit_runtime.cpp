@@ -122,7 +122,7 @@ static void _print_val(Value v) {
 }
 
 uint64_t syn_rt_str_lit(const char* s, int n) {
-    return R(Value::from_ptr(tls_vm->alloc_string(s, size_t(n))));
+    return R(Value::from_ptr(tls_vm->intern_string(s, size_t(n))));
 }
 
 // Create a JIT-compiled closure without going through the interpreter.
@@ -250,8 +250,17 @@ uint64_t syn_rt_get_global(const char* name) {
 void syn_rt_str_inplace_add(uint64_t* dst, uint64_t rhs_) {
     Value d = V(*dst), r = V(rhs_);
     if (val_is_string(d) && val_is_string(r)) {
-        as_str(d).data.append(as_str(r).data);
-        as_str(d).hash = 0;
+        ObjString* sd = &as_str(d);
+        if (sd->is_interned) {
+            // Interned strings are immutable — materialize a mutable copy
+            ObjString* ns = tls_vm->alloc_string(sd->data.data(), sd->data.size());
+            ns->data.append(as_str(r).data);
+            ns->hash = 0;
+            *dst = R(Value::from_ptr(ns));
+            return;
+        }
+        sd->data.append(as_str(r).data);
+        sd->hash = 0;
         return;
     }
     Value res = val_add(d, r);

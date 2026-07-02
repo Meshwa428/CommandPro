@@ -1157,7 +1157,7 @@ uint16_t Compiler::add_const(Value v)
 
 uint16_t Compiler::add_str_const(const std::string& s)
 {
-    return chunk().add_string(s);
+    return chunk().add_constant(Value::from_ptr(m_vm.intern_string(s.data(), s.size())));
 }
 
 void Compiler::move_to(int src, int dst)

@@ -108,8 +108,10 @@ struct ObjInt : Obj {
 
 struct ObjString : Obj {
     std::string data;
-    uint32_t    hash = 0;
+    uint32_t    hash        = 0;
+    bool        is_interned = false;
     explicit ObjString(std::string s);
+    ObjString(std::string s, uint32_t h);  // intern-path ctor (hash pre-computed)
 };
 
 // Small-buffer vector for ObjList: holds first 2 Values inline (no heap alloc

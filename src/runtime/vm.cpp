@@ -8,6 +8,7 @@
 #include <new>
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 
 namespace syn {
 
@@ -65,6 +66,10 @@ VM::~VM()
         delete ip;
         ip = next;
     }
+    // Free interned strings (not in gc_list or str_pool)
+    for (uint32_t i = 0; i < m_intern_cap; ++i)
+        delete m_intern_table[i];
+    delete[] m_intern_table;
 }
 
 // ── String pool allocators ────────────────────────────────────────────────────
@@ -100,6 +105,46 @@ ObjString* VM::alloc_string_raw()
     }
     obj->gc_next = m_gc_list;
     m_gc_list = obj;
+    return obj;
+}
+
+ObjString* VM::intern_string(const char* data, size_t len)
+{
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < len; ++i) h = (h ^ (uint8_t)data[i]) * 16777619u;
+
+    if (!m_intern_table) {
+        m_intern_cap   = 512;
+        m_intern_table = new ObjString*[512]();
+    }
+
+    uint32_t mask = m_intern_cap - 1;
+    uint32_t slot = h & mask;
+    while (m_intern_table[slot]) {
+        ObjString* s = m_intern_table[slot];
+        if (s->hash == h && s->data.size() == len && memcmp(s->data.data(), data, len) == 0)
+            return s;
+        slot = (slot + 1) & mask;
+    }
+
+    auto* obj = new ObjString(std::string(data, len), h);
+    obj->is_interned = true;
+    m_intern_table[slot] = obj;
+
+    if (++m_intern_count * 4 > m_intern_cap * 3) {
+        uint32_t new_cap = m_intern_cap * 2;
+        ObjString** nt = new ObjString*[new_cap]();
+        uint32_t nm = new_cap - 1;
+        for (uint32_t i = 0; i < m_intern_cap; ++i) {
+            if (!m_intern_table[i]) continue;
+            uint32_t ns = m_intern_table[i]->hash & nm;
+            while (nt[ns]) ns = (ns + 1) & nm;
+            nt[ns] = m_intern_table[i];
+        }
+        delete[] m_intern_table;
+        m_intern_table = nt;
+        m_intern_cap = new_cap;
+    }
     return obj;
 }
 
@@ -236,6 +281,7 @@ void VM::collect_garbage()
             case ObjKind::String: {
                 auto* s = static_cast<ObjString*>(o);
                 s->data.clear();
+                s->hash = 0;
                 s->gc_next = m_str_pool;
                 m_str_pool = s;
                 break;

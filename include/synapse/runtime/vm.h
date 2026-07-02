@@ -63,6 +63,9 @@ public:
     ObjString* alloc_string(const std::string& s) { return alloc_string(s.data(), s.size()); }
     ObjString* alloc_string_raw();  // get empty ObjString with capacity preserved
 
+    // Intern table: one ObjString per unique content; pointer equality = content equality
+    ObjString* intern_string(const char* data, size_t len);
+
     ObjList* alloc_list();
     ObjMap*  alloc_map();
 
@@ -93,6 +96,9 @@ private:
     ObjList*    m_list_pool     = nullptr;
     ObjMap*     m_map_pool      = nullptr;
     ObjInt*     m_int_pool      = nullptr;
+    ObjString** m_intern_table  = nullptr;
+    uint32_t    m_intern_cap    = 0;
+    uint32_t    m_intern_count  = 0;
 public:
     // Pooled large-int allocation (values outside signed 48-bit range). Without
     // pooling, big-int arithmetic (e.g. RNG products) malloc/free per op.

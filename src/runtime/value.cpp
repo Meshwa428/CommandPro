@@ -28,6 +28,11 @@ ObjString::ObjString(std::string s) : data(std::move(s))
     for (unsigned char c : data) hash = (hash ^ c) * 16777619u;
 }
 
+ObjString::ObjString(std::string s, uint32_t h) : data(std::move(s)), hash(h)
+{
+    kind = ObjKind::String;
+}
+
 // ── ObjMap ────────────────────────────────────────────────────────────────────
 
 void ObjMap::build_index()
@@ -199,9 +204,14 @@ bool val_eq(Value a, Value b)
     if (a.is_float() && b.is_float()) return a.as_float() == b.as_float();
     if (a.is_int() && b.is_float())   return double(a.as_int()) == b.as_float();
     if (a.is_float() && b.is_int())   return a.as_float() == double(b.as_int());
-    // string equality
-    if (val_is_string(a) && val_is_string(b))
-        return as_str(a).data == as_str(b).data;
+    // string equality: pointer eq catches interned pairs; hash fast-rejects others
+    if (val_is_string(a) && val_is_string(b)) {
+        ObjString& sa = as_str(a), &sb = as_str(b);
+        if (!sa.hash) { sa.hash = 2166136261u; for (unsigned char c : sa.data) sa.hash = (sa.hash ^ c) * 16777619u; }
+        if (!sb.hash) { sb.hash = 2166136261u; for (unsigned char c : sb.data) sb.hash = (sb.hash ^ c) * 16777619u; }
+        if (sa.hash != sb.hash) return false;
+        return sa.data == sb.data;
+    }
     return false;
 }
 
