@@ -130,6 +130,35 @@ Template/baseline JIT, generational+incremental GC, Windows/macOS automation
 backends, hosted package registry, LSP server, optional type annotations with
 checked mode.
 
+## 10. Synapse LLM (post-compiler)
+
+Once the compiler + automation layer (Phases 1–9) are stable, the next
+milestone is training a model purpose-built for Synapse.
+
+**Goal:** Empirically validate the core design premise — that AI-friendly
+syntax produces better LLM code generation than Python equivalents.
+
+### Research question
+Does Synapse's token-economy and unambiguous grammar measurably improve LLM
+code generation accuracy (pass@k) compared to Python + pyautogui for OS
+automation tasks, when fine-tuned on equivalent data?
+
+### Plan
+
+| Step | Contents |
+|------|----------|
+| **Dataset** | Collect (task description → Synapse script) pairs. Sources: handwritten examples, LLM-generated + human-verified, scraped automation recipes translated to Synapse. Parallel Python corpus for controlled comparison. |
+| **Tokenizer cost audit** | Automated report: Synapse vs Python BPE token count per task. Quantifies the token-economy claim with real numbers. |
+| **Baseline eval** | Pass@1/pass@5 on a held-out task set using a base model (Llama / Mistral / Qwen) prompted with a Synapse grammar card vs Python docs. Zero-shot, no fine-tuning. |
+| **Fine-tune** | SFT on (task → Synapse) pairs. Compare pass@k before/after. |
+| **Controlled comparison** | Same model, same tasks, fine-tuned on Python equivalents. Δ accuracy between Synapse-tuned and Python-tuned = the syntax-design signal. |
+| **Paper** | If Δ is significant: publish. Research angle is novel — no existing paper measures syntax design impact on LLM automation code generation with controlled fine-tuning. |
+
+### Dependencies
+- Phase 9 complete (stable language + tooling)
+- At least 500 real automation tasks with ground-truth Synapse scripts
+- Execution harness for auto-grading generated scripts against the mock backend
+
 ## 7. Working agreements
 
 - Conventional commits (`feat:`, `fix:`, `perf:`, `test:`, `docs:`, `chore:`).
