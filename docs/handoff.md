@@ -97,30 +97,30 @@ Registers are quiet-NaN boxed `double` variables (8 bytes):
 
 ## 6. Current Implementation Status
 
-### Phase 0: Scaffold — ✅ Done
-- Build structure, warnings, compilation flags, presets configuration.
-- Catch2 unit test discovered runner.
+Status against the phase table in [PLAN.md](file:///home/meshwa/Documents/Projects/CommandPro/PLAN.md) §5.
 
-### Phase 1: Lexer Core — ✅ Done & Checked
-- **Source Indexing:** Handles line-column mapping and boundary spans.
-- **Diagnostics:** Emits clang-style inline diagnostics with caret highlighting (`^`) and line previews.
-- **Lexer & Tokens:** Hand-written, zero-copy tokenizer. Parses decimal/hex/bin/oct integers, float exponents, duration prefixes, raw strings, multiline strings, and nested string interpolation.
-- **Unit Tests:** `tests/unit/test_lexer.cpp` has 6 test cases (61 assertions), all compilation and checks pass.
+- **Phase 0 — Foundations:** ✅ CMake presets (`debug`/`release`), Catch2 runner, conformance harness (`tests/run.py`, auto-builds the preset), benchmark runner.
+- **Phase 1 — Calculator core:** ✅ Lexer, Pratt parser, diagnostics, 64-bit bytecode + register VM. int64/float64, strings + interpolation (incl. `{{`/`}}` escapes), booleans, `none`, `let`/`const`, arithmetic, comparison, `and/or/not`, `say`.
+- **Phase 2 — Control flow:** ✅ `if/else if/else`, `while`, `repeat`, `for`, ranges, `break`/`continue`, `match`.
+- **Phase 3 — Functions:** ✅ `fn`, returns, closures/upvalues, native fn interface, recursion.
+- **Phase 4 — Collections:** ✅ lists, maps, tuples, indexing, slicing, methods, iteration.
+- **Phase 5 — Errors & modules:** ✅ `try/catch/finally`, `throw`, error values; `use` multi-file imports.
+- **Phase 6 — Automation layer:** 🔄 Closing. Command statements (`mouse`/`click`/`type`/`open`/`wait`/…) desugar to `mouse.*`/`keyboard.*`/`window.*`/`app.*` stdlib. Platform interface with **mock** (CI), real **Linux** (X11/XTest, libpng, spawn), and **Windows** stub backends. Conformance-tested via mock (`SYN_MOCK_PLATFORM`).
+  - Remaining DoD: benchmark-not-regressed check + published methodology.
+- **Also present (post-1.0 track):** a template JIT (`src/backend/jit.cpp`, default path; `SYN_NO_JIT=1` forces the interpreter — the correctness ground truth) and a **RAT** trajectory-model skeleton (`src/rat/`, not yet wired into the move path).
+
+### Notable invariants / gotchas
+- **`say` is the sole print verb**, space-form: `say "hi {name}"`. There is no `print`. Multi-value output uses interpolation, never extra args.
+- **`tests/run.py` auto-builds** `build/<preset>/syn`. Never trust an ad-hoc `cmake --build build` — that produces `build/syn`, which the harness ignores. Verify against the preset binary.
+- The JIT has silently produced wrong answers before — check correctness under `SYN_NO_JIT=1`, not just speed.
 
 ---
 
 ## 7. Next Actions for the Incoming Agent
 
-You are starting from **Phase 1 (AST & Parser)**. Here is your checklist:
+1. **Finish Phase 6 DoD:** run the full benchmark matrix on a release build, confirm no >5% regression, record methodology.
+2. **RAT calibrate loop:** wire the trajectory model into the `mouse`/`move` path, then build `syn rat calibrate` (fullscreen overlay → per-user `~/.config/synapse/rat_user.bin`).
+3. **Phase 7 — Package manager:** `syn.toml` + lockfile, `syn add`/`syn install`, path + git deps, semver resolution (design doc 004).
+4. **Phases 8–9:** performance program (published `docs/BENCHMARKS.md` vs CPython) and tooling (REPL, `syn disasm`, `syn fmt`, guide, AI prompt-pack).
 
-1. **AST Representation (`include/synapse/frontend/ast.h`):**
-   - Design node structures for expressions and statements.
-   - Design arena allocator (or keep it simple with `std::unique_ptr` for AST nodes).
-2. **Pratt Parser (`src/frontend/parser.cpp`):**
-   - Follow the grammar spec in [docs/spec/grammar.md](file:///home/meshwa/Documents/Projects/CommandPro/docs/spec/grammar.md).
-   - Implement recursive descent for statements and Pratt parser for expressions.
-   - Wire AST output.
-3. **Resolver / Semantic Analysis (Phase 2):**
-   - Scope resolution, local slots binding, upvalue capture analysis.
-4. **Compile/Build verification:**
-   - Always run `cmake --preset debug`, then `cmake --build --preset debug`, and verify with `./build/debug/tests/syn_tests`.
+**Build/verify loop:** `cmake --build --preset debug` (or `release`), then `python tests/run.py` (auto-builds) and `ctest --test-dir build/debug`.
