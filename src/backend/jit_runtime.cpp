@@ -12,8 +12,11 @@
 #include "synapse/runtime/vm.h"
 #include "synapse/runtime/value.h"
 #include "synapse/runtime/chunk.h"
+#include "synapse/common/stack_guard.h"
 #include <unordered_map>
 #include <string>
+#include <cstdio>
+#include <cstdlib>
 
 using namespace syn;
 
@@ -229,6 +232,17 @@ void syn_rt_drain_jit_pool() {
     ObjList* p = tls_jit_list_pool;
     while (p) { ObjList* next = (ObjList*)p->gc_next; delete p; p = next; }
     tls_jit_list_pool = nullptr;
+}
+
+// C-stack headroom guard for JIT'd native recursion. The JIT tier can't raise
+// a catchable Synapse error, so on exhaustion it prints a clean E0102 and
+// exits — a controlled failure instead of a segfault (PLAN principle 7).
+int syn_rt_stack_ok(void) { return stack_guard_ok() ? 1 : 0; }
+
+void syn_rt_stack_overflow(void) {
+    std::fflush(stdout);
+    std::fprintf(stderr, "error[E0102]: stack overflow (recursion too deep)\n");
+    std::exit(70);
 }
 
 void syn_rt_print1(uint64_t v_) { _print_val(V(v_)); fputc('\n', stdout); }

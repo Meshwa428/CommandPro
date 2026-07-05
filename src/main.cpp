@@ -13,6 +13,7 @@
 #include <unistd.h>
 #endif
 
+#include "synapse/common/stack_guard.h"
 #include "synapse/frontend/ast.h"
 #include "synapse/frontend/lexer.h"
 #include "synapse/frontend/parser.h"
@@ -706,6 +707,7 @@ static void repl()
 
 int main(int argc, char* argv[])
 {
+    syn::stack_guard_init();  // record this thread's C-stack bounds (VM + JIT)
     if (argc == 1) {
         repl();
     } else if (argc == 2) {

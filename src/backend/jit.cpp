@@ -3434,6 +3434,8 @@ extern uint64_t syn_rt_has_key(uint64_t, uint64_t);
 extern uint64_t syn_rt_str_lit(const char*,int);
 extern void     syn_rt_print1(uint64_t);
 extern void     syn_rt_print_n(const uint64_t*,int);
+extern int      syn_rt_stack_ok(void);
+extern void     syn_rt_stack_overflow(void);
 extern uint64_t syn_rt_call_jitcl(uint64_t,int,const uint64_t*);
 extern uint64_t syn_rt_call_val(uint64_t,int,const uint64_t*);
 extern uint64_t syn_rt_get_global(const char*);
@@ -3638,6 +3640,7 @@ static inline int64_t syn_ipow(int64_t base, int64_t exp) {
             if (i) o << ","; o << "int64_t _v_" << fn->params[i].name;
         }
         o << ") {\n";
+        o << "    if(!syn_rt_stack_ok()) syn_rt_stack_overflow();\n";
         // Specialized functions use aliases in their body; others use plain context
         bool is_spec = !spec_ctx.aliases.empty() && spec_ctx.fn_params.count(fn->name);
         emit_int_block(fn->body, o, ifns, 1, is_spec ? spec_ctx : g_empty_ctx);
@@ -3652,6 +3655,7 @@ static inline int64_t syn_ipow(int64_t base, int64_t exp) {
             if (i) o << ","; o << "double _v_" << fn->params[i].name;
         }
         o << ") {\n";
+        o << "    if(!syn_rt_stack_ok()) syn_rt_stack_overflow();\n";
         emit_float_block(fn->body, o, ffns, 1);
         o << "    return 0.0;\n}\n\n";
     }

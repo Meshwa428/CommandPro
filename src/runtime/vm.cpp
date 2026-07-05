@@ -2,6 +2,7 @@
 #include "synapse/runtime/chunk.h"
 #include "synapse/runtime/opcodes.h"
 #include "synapse/runtime/value.h"
+#include "synapse/common/stack_guard.h"
 #include <cmath>
 #include <stdexcept>
 #include <iostream>
@@ -82,7 +83,13 @@ void VM::drop_stale_try_handlers()
 }
 
 VM::VM()
-    : m_stack(new Value[REGISTER_STACK]), m_frames(new CallFrame[MAX_FRAMES])
+      // Both buffers are raw-allocated (not new T[N]): value-constructing 12.8M
+      // Values / 50k frames would touch every page and commit ~100MB up front,
+      // even for a one-line script. Raw storage stays uncommitted until the
+      // depth is actually reached — m_stack is zeroed per-window on demand by
+      // ensure_stack_window(), and frames are POD, fully written at push time.
+    : m_stack(static_cast<Value*>(::operator new(sizeof(Value) * REGISTER_STACK))),
+      m_frames(static_cast<CallFrame*>(::operator new(sizeof(CallFrame) * MAX_FRAMES)))
 {
     // Eagerly zero only the old default budget (64 frames' worth) — matches
     // pre-existing init cost. Deeper recursion zeroes its window on demand
@@ -103,8 +110,8 @@ void VM::ensure_stack_window(int base)
 
 VM::~VM()
 {
-    delete[] m_stack;
-    delete[] m_frames;
+    ::operator delete(m_stack);   // raw storage (see ctor)
+    ::operator delete(m_frames);  // raw storage (POD frames, see ctor)
     // Free GC list
     Obj* cur = m_gc_list;
     while (cur) {
@@ -691,6 +698,10 @@ Value VM::call_value(Value callee, int nargs, Value* args)
     }
 
     if (m_frame_count >= MAX_FRAMES) raise("E0102", "stack overflow");
+    // call_value re-enters run_frame() on the C++ stack, so this path (unlike
+    // the iterative CALL opcode) can exhaust the real thread stack before
+    // MAX_FRAMES. Bail cleanly while there is still headroom for the raise.
+    if (!stack_guard_ok()) raise("E0102", "stack overflow");
 
     int base = int(args - m_stack);
     ensure_stack_window(base);

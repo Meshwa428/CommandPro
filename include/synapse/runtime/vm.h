@@ -131,20 +131,21 @@ private:
     // m_frame_count is decremented on every return.
     void drop_stale_try_handlers();
 
-    // 1,000 frames (matches Python's default sys.getrecursionlimit()) — was
-    // 64, which threw "stack overflow" on ordinary recursion depths (e.g. a
-    // plain recursive sum to 100). Heap-allocated rather than fixed member
-    // arrays: at larger sizes a fixed array would itself risk blowing the
-    // *host* C++ thread's stack when VM is a local variable. Bigger than
-    // 1000 is possible but costs real fixed startup time (~1.3ms at 128
-    // frames vs ~2.5ms at 2000, measured) — a true dynamic-growth stack
-    // would avoid that tradeoff entirely, but isn't safe with the current
-    // design: call_value() recursively re-enters run_frame() on the C++
-    // call stack for native/JIT calls, so growing (reallocating) m_stack
-    // mid-recursion would leave already-suspended callers' local Value*
-    // pointers dangling into the freed old buffer.
-    static constexpr int REGISTER_STACK  = 256 * 1000;
-    static constexpr int MAX_FRAMES      = 1000;
+    // Frame ceiling for *pure* Synapse recursion, which runs iteratively in
+    // the dispatch loop (heap frames, no C-stack growth) — so this is bounded
+    // by memory, not the host C++ stack, and set generously. Reallocating to
+    // "grow" mid-recursion is unsafe (call_value() re-enters run_frame() on
+    // the C++ stack, holding Value*/CallFrame& into these buffers), so instead
+    // both arrays are a single large reservation, allocated once and committed
+    // lazily by the OS: m_stack is default-initialised (trivial Value → no
+    // page touch) and zeroed on demand by ensure_stack_window(); m_frames is
+    // raw-allocated (see the ctor) so the ~50k frames cost no startup paging
+    // and only the depth actually reached is committed. Recursion that grows
+    // the real C stack (call_value re-entry, JIT'd code) is bounded separately
+    // by the stack_guard (stack_guard.h), which raises E0102 before overflow.
+    // Hitting MAX_FRAMES still raises a clean E0102 for runaway recursion.
+    static constexpr int MAX_FRAMES      = 50000;
+    static constexpr int REGISTER_STACK  = 256 * MAX_FRAMES;
 
     Value*     m_stack;
     CallFrame* m_frames;
