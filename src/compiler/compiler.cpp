@@ -748,6 +748,23 @@ int Compiler::compile_float_lit(const FloatLitExpr* e, int dest)
     return r;
 }
 
+// Collapse doubled interpolation braces `{{`->`{`, `}}`->`}` (spec 001 §strings).
+// Applied to string-literal content (interp parts and plain strings alike).
+static std::string collapse_braces(const std::string& in)
+{
+    std::string out;
+    out.reserve(in.size());
+    for (std::size_t i = 0; i < in.size(); ++i) {
+        if ((in[i] == '{' || in[i] == '}') && i + 1 < in.size() && in[i+1] == in[i]) {
+            out += in[i];
+            ++i;
+        } else {
+            out += in[i];
+        }
+    }
+    return out;
+}
+
 static std::string unescape(const std::string& raw)
 {
     // raw includes surrounding quotes
@@ -766,6 +783,9 @@ static std::string unescape(const std::string& raw)
             case '\'': out += '\''; break;
             default: out += raw[i]; break;
             }
+        } else if ((raw[i] == '{' || raw[i] == '}') && i+1 < end && raw[i+1] == raw[i]) {
+            out += raw[i];  // collapse {{ }} in plain (non-interpolated) strings
+            ++i;
         } else {
             out += raw[i];
         }
@@ -790,7 +810,7 @@ int Compiler::compile_interp_string(const InterpStringExpr* e, int dest)
     for (auto& part : e->parts) {
         int pr = alloc_reg(); ++n;
         if (part.is_str) {
-            uint16_t ki = add_str_const(part.text);
+            uint16_t ki = add_str_const(collapse_braces(part.text));
             emit(enc_I(Op::LOAD_CONST, uint8_t(pr), int64_t(ki)));
         } else {
             int er = alloc_reg(); ++n;

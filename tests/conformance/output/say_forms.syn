@@ -5,6 +5,10 @@ say "hello {name}"
 # expect: hello world
 say 2 + 2
 # expect: 4
+say "literal brace {{ok}}"
+# expect: literal brace {ok}
+say "val {name} brace {{x}}"
+# expect: val world brace {x}
 let xs = [1, 2, 3]
 say xs
 # expect: [1, 2, 3]

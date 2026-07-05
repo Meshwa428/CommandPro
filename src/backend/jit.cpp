@@ -2698,6 +2698,8 @@ static std::string str_unescape(const std::string& raw) {
             case '"': out+='"'; break; case '\'': out+='\''; break;
             default: out+=raw[i]; break;
             }
+        } else if ((raw[i] == '{' || raw[i] == '}') && i+1 < end && raw[i+1] == raw[i]) {
+            out += raw[i]; ++i;  // collapse {{ }} in plain strings
         } else {
             out += raw[i];
         }

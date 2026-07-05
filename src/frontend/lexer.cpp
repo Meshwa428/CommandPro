@@ -72,8 +72,12 @@ Token Lexer::next_token()
     if (m_resume_string) {
         m_resume_string = false;
         std::size_t start = m_pos;
-        while (!at_end() && peek() != '"' && peek() != '{') {
-            if (peek() == '\\') advance();
+        while (!at_end() && peek() != '"') {
+            if (peek() == '\\') { advance(); advance(); continue; }
+            if (peek() == '{') {
+                if (peek(1) == '{') { advance(); advance(); continue; }  // escaped {{
+                break;  // real interpolation
+            }
             advance();
         }
         if (peek() == '{') {
@@ -328,8 +332,12 @@ Token Lexer::lex_string(std::size_t start)
 
     // Interpolated string: yield first part
     std::size_t part_start = m_pos;
-    while (!at_end() && peek() != '"' && peek() != '{') {
-        if (peek() == '\\') advance();
+    while (!at_end() && peek() != '"') {
+        if (peek() == '\\') { advance(); advance(); continue; }
+        if (peek() == '{') {
+            if (peek(1) == '{') { advance(); advance(); continue; }  // escaped {{
+            break;  // real interpolation
+        }
         advance();
     }
 
