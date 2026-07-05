@@ -1,0 +1,9 @@
+# test: errors/uncaught_throw
+try {
+    throw "unhandled"
+} finally {
+    say("cleanup ran")
+}
+say("never reached")
+# expect: cleanup ran
+# expect-error: E0118

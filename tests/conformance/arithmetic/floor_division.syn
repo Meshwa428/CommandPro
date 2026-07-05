@@ -1,0 +1,5 @@
+# test: arithmetic/floor_division
+say(10 // 3)
+# expect: 3
+say(-7 // 2)
+# expect: -4

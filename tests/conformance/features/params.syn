@@ -1,0 +1,28 @@
+# test: features/params — defaults and variadic
+fn greet(name, greeting = "hello") { return "{greeting}, {name}" }
+say(greet("mesh"))
+# expect: hello, mesh
+say(greet("mesh", "yo"))
+# expect: yo, mesh
+fn f(a, b = a * 2, c = 10) { return a + b + c }
+say(f(1))
+# expect: 13
+say(f(1, 5))
+# expect: 16
+say(f(1, 5, 100))
+# expect: 106
+fn sum(*nums) {
+  let t = 0
+  for n in nums { t += n }
+  return t
+}
+say(sum())
+# expect: 0
+say(sum(1, 2, 3, 4))
+# expect: 10
+fn tagged(tag, *rest) { return "{tag}: {len(rest)}" }
+say(tagged("x", 1, 2))
+# expect: x: 2
+let anon = fn(x = 42) { return x }
+say(anon())
+# expect: 42

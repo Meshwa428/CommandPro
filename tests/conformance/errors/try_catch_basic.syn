@@ -1,0 +1,10 @@
+# test: errors/try_catch_basic
+try {
+    let xs = [1, 2, 3]
+    say(xs[10])
+} catch e {
+    say("caught: " + e["message"])
+}
+say("after")
+# expect: caught: list index out of range
+# expect: after

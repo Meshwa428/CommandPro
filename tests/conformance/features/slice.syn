@@ -1,0 +1,14 @@
+# test: features/slice
+let xs = [10, 20, 30, 40, 50]
+say(xs[1 to 3])
+# expect: [20, 30]
+say(xs[to 2])
+# expect: [10, 20]
+say(xs[2 to])
+# expect: [30, 40, 50]
+say(xs[-2 to])
+# expect: [40, 50]
+say("hello"[1 to 4])
+# expect: ell
+say(len(xs[0 to 99]))
+# expect: 5

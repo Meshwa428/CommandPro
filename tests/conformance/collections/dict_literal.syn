@@ -1,0 +1,23 @@
+# test: collections/dict_literal
+# JSON-style dictionary: inline bareword-key literals, dot access (read and
+# write), string-subscript access, and nesting. Regression test for a bug
+# where bareword map keys (`{ id: 5 }`) were stored as empty strings — the
+# parser built a StringLitExpr whose raw text lacked the surrounding quotes
+# that Compiler::unescape() strips, so "id" collapsed to "".
+let rec = { id: 42, score: 100, name: "widget" }
+say(rec.id)
+# expect: 42
+say(rec["score"])
+# expect: 100
+say(rec.name)
+# expect: widget
+rec.id = 7
+say(rec.id)
+# expect: 7
+let data = { user: { name: "alice", age: 30 }, tags: [1, 2, 3] }
+say(data.user.name)
+# expect: alice
+say(data.user.age)
+# expect: 30
+say(data.tags[1])
+# expect: 2

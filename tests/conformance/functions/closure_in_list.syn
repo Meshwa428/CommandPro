@@ -1,0 +1,23 @@
+# test: functions/closure_in_list
+# Regression test: calling a closure stored in a list, retrieved via a
+# numeric-range for-loop, used to crash (stack smashing) once the JIT's
+# value-JIT tier became eligible for this __main__ — a JIT-compiled closure
+# misbehaves once called from outside the compilation unit that created it.
+# Closure creation (FnExpr) is now excluded from JIT eligibility entirely,
+# so this always runs correctly via the interpreter.
+fn make_adder(n) {
+    return fn(x) { return x + n }
+}
+let fns = []
+let i = 0
+while i < 5 {
+    fns.append(make_adder(i))
+    i = i + 1
+}
+let total = 0
+for j = 0 to 5 {
+    let f = fns[j]
+    total = total + f(10)
+}
+say(total)
+# expect: 60

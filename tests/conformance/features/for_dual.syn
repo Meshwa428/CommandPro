@@ -1,0 +1,22 @@
+# test: features/for_dual — dual-bind for over maps and lists
+let m = {"a": 1, "b": 2, "c": 3}
+for k, v in m { say(k, v) }
+# expect: a 1
+# expect: b 2
+# expect: c 3
+for k in m { say(k) }
+# expect: a
+# expect: b
+# expect: c
+let xs = [10, 20, 30]
+for i, x in xs { say(i, x) }
+# expect: 0 10
+# expect: 1 20
+# expect: 2 30
+let total = 0
+for k, v in m {
+  if v == 2 { continue }
+  total += v
+}
+say(total)
+# expect: 4

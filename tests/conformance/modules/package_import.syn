@@ -1,0 +1,14 @@
+# test: modules/package_import
+# use "<dir>" resolves <dir>/__init__.syn when <dir>.syn doesn't exist —
+# the Python __init__.py convention. mathutils_pkg/__init__.syn itself
+# uses two sibling files and adds its own function; all become part of
+# the aliased namespace here.
+use "../../fixtures/mathutils_pkg" as m
+say(m.add(2, 3))
+# expect: 5
+say(m.sub(10, 4))
+# expect: 6
+say(m.square(5))
+# expect: 25
+say(m.describe())
+# expect: mathutils package

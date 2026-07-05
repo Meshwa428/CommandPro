@@ -1,0 +1,12 @@
+# test: errors/try_catch_finally
+try {
+    throw "boom"
+} catch e {
+    say("caught " + e)
+} finally {
+    say("finally")
+}
+say("after")
+# expect: caught boom
+# expect: finally
+# expect: after

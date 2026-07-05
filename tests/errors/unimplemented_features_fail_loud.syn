@@ -1,0 +1,6 @@
+# test: errors/unimplemented_features_fail_loud
+# Constructs the parser accepts but codegen doesn't implement must be compile
+# errors, never silent no-ops. (Slice assignment is the remaining case.)
+# expect-error: assignment
+let xs = [1, 2, 3]
+xs[0 to 2] = [9]

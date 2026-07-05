@@ -1,0 +1,4 @@
+# test: errors/list_index_out_of_range
+let xs = [1, 2, 3]
+say(xs[10])
+# expect-error: E0106

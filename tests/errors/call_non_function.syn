@@ -1,0 +1,4 @@
+# test: errors/call_non_function
+let x = 5
+x()
+# expect-error: E0100

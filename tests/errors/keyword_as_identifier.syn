@@ -1,0 +1,10 @@
+# test: errors/keyword_as_identifier
+# `middle` is a reserved keyword (mouse-button name). Using it as a function
+# name must fail to parse cleanly — not hang/OOM. Regression test for a bug
+# where Parser::error_expr()'s only call site never consumed the offending
+# token, so the parser re-parsed it forever, growing the diagnostics vector
+# until std::bad_alloc instead of reporting a normal parse error.
+fn middle() {
+    say("hi")
+}
+# expect-error: expected

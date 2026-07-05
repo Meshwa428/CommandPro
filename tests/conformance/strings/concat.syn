@@ -1,0 +1,5 @@
+# test: strings/concat
+say("a" + "b")
+# expect: ab
+say(upper("hi"))
+# expect: HI

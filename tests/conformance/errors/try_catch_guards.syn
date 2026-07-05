@@ -1,0 +1,13 @@
+# test: errors/try_catch_guards
+try {
+    let e2 = {}
+    e2["code"] = "io"
+    throw e2
+} catch e if e["code"] == "net" {
+    say("net error")
+} catch e if e["code"] == "io" {
+    say("io error")
+} catch e {
+    say("generic: " + e["code"])
+}
+# expect: io error

@@ -1,0 +1,4 @@
+# test: collections/list_len
+let xs = [1, 2, 3]
+say(len(xs))
+# expect: 3

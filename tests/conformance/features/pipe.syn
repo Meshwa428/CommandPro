@@ -1,0 +1,9 @@
+# test: features/pipe
+fn double(x) { return x * 2 }
+fn add(x, y) { return x + y }
+say(5 |> double())
+# expect: 10
+say(5 |> double() |> add(3))
+# expect: 13
+say([1, 2, 3] |> len())
+# expect: 3

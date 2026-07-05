@@ -1,0 +1,3 @@
+# test: errors/undefined_variable
+say(undefined_var)
+# expect-error: E0103

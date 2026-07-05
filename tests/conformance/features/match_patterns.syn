@@ -1,0 +1,45 @@
+# test: features/match_patterns — literals, types, tuples, guards, expression form
+fn describe(v) {
+  return match v {
+    case 0 { "zero" }
+    case 3.14 { "pi" }
+    case "hi" { "greeting" }
+    case true { "yes" }
+    case none { "nothing" }
+    case int if v > 100 { "big int" }
+    case int { "int" }
+    case string { "string" }
+    case (0, 0) { "origin" }
+    case (x, y) if x == y { "diagonal" }
+    case (x, y) { "point {x},{y}" }
+    case list { "list" }
+    else { "other" }
+  }
+}
+say(describe(0))
+# expect: zero
+say(describe(3.14))
+# expect: pi
+say(describe("hi"))
+# expect: greeting
+say(describe(none))
+# expect: nothing
+say(describe(500))
+# expect: big int
+say(describe(7))
+# expect: int
+say(describe((0, 0)))
+# expect: origin
+say(describe((4, 4)))
+# expect: diagonal
+say(describe((1, 2)))
+# expect: point 1,2
+say(describe([1]))
+# expect: list
+say(describe({}))
+# expect: other
+let x = match 2 { case 1 { "one" } case 2 { "two" } else { "many" } }
+say(x)
+# expect: two
+match 5 { case 5 { say("stmt form ok") } }
+# expect: stmt form ok
