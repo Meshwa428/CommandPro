@@ -735,12 +735,38 @@ static int rat_command(int argc, char* argv[])
         return 0;
     }
     if (sub == "calibrate") {
-        std::cerr << "rat calibrate: interactive overlay not yet available.\n"
-                     "The calibration data layer (profile load/override, status, reset) is in;\n"
-                     "the fullscreen click-to-calibrate overlay is the next step.\n";
-        return 1;
+        bool quick = (argc >= 4 && std::string(argv[3]) == "--quick");
+        int movements = quick ? 30 : 100;
+        std::string path = syn::rat_user_profile_path();
+        if (path.empty()) { std::cerr << "rat calibrate: $HOME unset\n"; return 1; }
+
+        syn::Platform* platform = make_platform();
+        std::cout << "Click each dot as it appears (" << movements
+                  << " movements). Esc to cancel.\n";
+        std::vector<syn::CalibrationSample> samples;
+        if (!platform->calibrate_rat(movements, samples) || samples.empty()) {
+            std::cerr << "Calibration cancelled or unavailable (needs an X11 display).\n";
+            return 1;
+        }
+
+        syn::RatProfile prof = syn::estimate_profile(samples);
+
+        // Ensure ~/.config/synapse exists before writing.
+        std::string dir = path.substr(0, path.find_last_of('/'));
+        std::string mkdir_cmd = "mkdir -p '" + dir + "'";
+        (void)std::system(mkdir_cmd.c_str());
+
+        if (!prof.save(path.c_str())) {
+            std::cerr << "Calibration measured but failed to write " << path << "\n";
+            return 1;
+        }
+        std::cout << "Calibrated from " << samples.size() << " movements → " << path << "\n"
+                  << "  fitts_a " << prof.fitts_a << "  fitts_b " << prof.fitts_b
+                  << "  overshoot " << prof.overshoot_rate << "\n"
+                  << "Run 'syn rat status' to review.\n";
+        return 0;
     }
-    std::cerr << "Usage: syn rat [status|reset|calibrate]\n";
+    std::cerr << "Usage: syn rat [status|reset|calibrate [--quick]]\n";
     return 1;
 }
 

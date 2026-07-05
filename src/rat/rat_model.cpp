@@ -60,6 +60,40 @@ std::string rat_user_profile_path()
     return std::string(home) + "/.config/synapse/rat_user.bin";
 }
 
+RatProfile estimate_profile(const std::vector<CalibrationSample>& s)
+{
+    RatProfile p = RatProfile::defaults();
+    if (s.empty()) return p;
+
+    // Fitts' law least-squares: time = a + b * ID, ID = log2(dist/W + 1).
+    double n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+    double curv = 0, trem = 0, over = 0;
+    for (const auto& m : s) {
+        if (m.distance <= 0 || m.target_w <= 0 || m.time_ms <= 0) continue;
+        double id = std::log2(m.distance / m.target_w + 1.0);
+        n += 1; sx += id; sy += m.time_ms; sxx += id * id; sxy += id * m.time_ms;
+        curv += m.curvature_frac;
+        trem += m.tremor;
+        over += m.overshot ? 1.0 : 0.0;
+    }
+    if (n < 2) return p;  // need at least two points to fit a line
+
+    double denom = n * sxx - sx * sx;
+    if (std::fabs(denom) > 1e-9) {
+        double b = (n * sxy - sx * sy) / denom;
+        double a = (sy - b * sx) / n;
+        // Guard against a degenerate/negative fit from noisy input.
+        if (std::isfinite(a) && std::isfinite(b) && b > 0 && a >= 0) {
+            p.fitts_a = a;
+            p.fitts_b = b;
+        }
+    }
+    p.curvature_scale = curv / n;
+    p.tremor_sigma    = trem / n;
+    p.overshoot_rate  = std::clamp(over / n, 0.0, 1.0);
+    return p;
+}
+
 const RatProfile& RatModel::active_profile()
 {
     static RatProfile prof = [] {

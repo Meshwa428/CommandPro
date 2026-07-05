@@ -1,15 +1,20 @@
 #include "linux_platform.h"
+#include "synapse/rat/rat_model.h"
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
+#include <X11/keysym.h>
 #include <X11/extensions/XTest.h>
 #include <png.h>
 #include <spawn.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <random>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -435,6 +440,120 @@ uint64_t LinuxPlatform::now_ns()
 {
     return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+// ── Calibration overlay (`syn rat calibrate`) ───────────────────────────────────
+//
+// Fullscreen override-redirect window; a target dot appears at a random spot,
+// the user clicks it, and the mouse path in between is sampled. Per movement we
+// record distance, dot size, movement time (first motion → click), path
+// curvature, whether it overshot, and a tremor proxy — the raw material
+// estimate_profile() turns into a RatProfile. Esc aborts.
+bool LinuxPlatform::calibrate_rat(int movements, std::vector<CalibrationSample>& out)
+{
+    Display* d = dpy(m_display);
+    if (!d) { std::fprintf(stderr, "rat calibrate: cannot open X display\n"); return false; }
+
+    int screen = DefaultScreen(d);
+    int sw = DisplayWidth(d, screen), sh = DisplayHeight(d, screen);
+    unsigned long black = BlackPixel(d, screen), white = WhitePixel(d, screen);
+
+    XSetWindowAttributes swa;
+    swa.override_redirect = True;         // cover the WM, no decorations
+    swa.background_pixel  = black;
+    swa.event_mask = ExposureMask | ButtonPressMask | PointerMotionMask | KeyPressMask;
+    Window win = XCreateWindow(d, RootWindow(d, screen), 0, 0, sw, sh, 0,
+                               CopyFromParent, InputOutput, CopyFromParent,
+                               CWOverrideRedirect | CWBackPixel | CWEventMask, &swa);
+    XMapRaised(d, win);
+    XGrabKeyboard(d, win, True, GrabModeAsync, GrabModeAsync, CurrentTime);
+    XGrabPointer(d, win, True, ButtonPressMask | PointerMotionMask,
+                 GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+
+    GC gc = XCreateGC(d, win, 0, nullptr);
+    std::mt19937 rng(std::random_device{}());
+    auto randint = [&](int lo, int hi) { return int(std::uniform_int_distribution<int>(lo, hi)(rng)); };
+
+    auto draw_dot = [&](int cx, int cy, int r, int idx, int total) {
+        XClearWindow(d, win);
+        XSetForeground(d, gc, white);
+        XFillArc(d, win, gc, cx - r, cy - r, 2 * r, 2 * r, 0, 360 * 64);
+        char msg[64];
+        std::snprintf(msg, sizeof(msg), "click the dot  —  %d / %d   (Esc to cancel)", idx, total);
+        XDrawString(d, win, gc, 24, 32, msg, int(std::strlen(msg)));
+        XFlush(d);
+    };
+
+    const int margin = 80;
+    int start_x = sw / 2, start_y = sh / 2;   // first movement starts from center
+    bool aborted = false;
+
+    for (int i = 0; i < movements && !aborted; ++i) {
+        int r  = randint(8, 22);                       // dot radius (px)
+        int tx = randint(margin, sw - margin);
+        int ty = randint(margin, sh - margin);
+        draw_dot(tx, ty, r, i + 1, movements);
+
+        std::vector<std::pair<double,double>> path;    // sampled cursor positions
+        double t_first = -1, t_click = 0;
+
+        bool clicked = false;
+        while (!clicked && !aborted) {
+            XEvent ev;
+            XNextEvent(d, &ev);
+            if (ev.type == KeyPress) {
+                KeySym ks = XLookupKeysym(&ev.xkey, 0);
+                if (ks == XK_Escape) aborted = true;
+            } else if (ev.type == Expose) {
+                draw_dot(tx, ty, r, i + 1, movements);
+            } else if (ev.type == MotionNotify) {
+                if (t_first < 0) t_first = double(ev.xmotion.time);
+                path.emplace_back(double(ev.xmotion.x), double(ev.xmotion.y));
+            } else if (ev.type == ButtonPress) {
+                t_click = double(ev.xbutton.time);
+                path.emplace_back(double(ev.xbutton.x), double(ev.xbutton.y));
+                clicked = true;
+            }
+        }
+        if (aborted) break;
+
+        double dx = tx - start_x, dy = ty - start_y;
+        double dist = std::hypot(dx, dy);
+        double t_ms = (t_first >= 0) ? (t_click - t_first) : 0.0;
+        if (dist < 1.0 || t_ms <= 0.0) { start_x = tx; start_y = ty; continue; }
+
+        // Shape metrics: perpendicular deviation and along-axis projection.
+        double ax = dx / dist, ay = dy / dist;         // unit start→target
+        double px = -ay, py = ax;                       // unit perpendicular
+        double max_perp = 0, sum_perp2 = 0, max_proj = 0;
+        int nprev = 0;
+        for (auto& pt : path) {
+            double rx = pt.first - start_x, ry = pt.second - start_y;
+            double perp = rx * px + ry * py;
+            double proj = rx * ax + ry * ay;
+            max_perp = std::max(max_perp, std::fabs(perp));
+            sum_perp2 += perp * perp;
+            max_proj = std::max(max_proj, proj);
+            ++nprev;
+        }
+        CalibrationSample s;
+        s.distance       = dist;
+        s.target_w       = 2.0 * r;
+        s.time_ms        = t_ms;
+        s.curvature_frac = std::clamp(max_perp / dist, 0.0, 0.5);
+        s.tremor         = nprev > 0 ? std::clamp(std::sqrt(sum_perp2 / nprev) / dist * 4.0, 0.05, 1.5) : 0.4;
+        s.overshot       = max_proj > dist * 1.02;
+        out.push_back(s);
+
+        start_x = tx; start_y = ty;
+    }
+
+    XUngrabPointer(d, CurrentTime);
+    XUngrabKeyboard(d, CurrentTime);
+    XFreeGC(d, gc);
+    XDestroyWindow(d, win);
+    XFlush(d);
+    return !aborted && !out.empty();
 }
 
 } // namespace syn

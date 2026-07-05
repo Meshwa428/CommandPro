@@ -26,6 +26,24 @@ struct RatProfile {
 // Empty if $HOME is unset. Does not create the directory.
 std::string rat_user_profile_path();
 
+// One recorded human movement from the calibration overlay: how far the cursor
+// travelled, the target size, how long it took, and shape metrics measured from
+// the sampled trajectory. The overlay (Platform::calibrate_rat) fills these;
+// estimate_profile() turns a batch into a RatProfile.
+struct CalibrationSample {
+    double distance;       // px from movement start to click
+    double target_w;       // dot diameter (px)
+    double time_ms;        // movement duration
+    double curvature_frac; // max |perpendicular deviation| / distance
+    double tremor;         // noise coefficient estimated from the path
+    bool   overshot;       // trajectory passed the target then returned
+};
+
+// Fit a RatProfile from recorded movements: Fitts' law (a,b) by least-squares
+// over (log2(distance/W + 1), time), plus averaged curvature/tremor/overshoot.
+// Falls back to sensible values for degenerate input. Pure — unit-tested.
+RatProfile estimate_profile(const std::vector<CalibrationSample>& samples);
+
 // RAT v1 — physics-only human mouse trajectory generator (design doc 005).
 // No trained model: multi-peaked velocity profile (2-4 overlapping
 // minimum-jerk sub-movements), signal-dependent noise, ~39% overshoot rate,

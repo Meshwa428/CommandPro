@@ -46,6 +46,8 @@ public:
     void     wait(uint64_t ns) override;
     uint64_t now_ns() override;
 
+    bool calibrate_rat(int movements, std::vector<CalibrationSample>& out) override;
+
 private:
     _XDisplay* m_display;
 };

@@ -6,6 +6,8 @@
 
 namespace syn {
 
+struct CalibrationSample;  // rat_model.h
+
 // One point on a mouse trajectory: absolute screen coords + time offset from
 // the start of the movement. RatModel (Stage 4) produces these; Platform
 // implementations replay them.
@@ -59,6 +61,13 @@ public:
     // `wait 2s` runs in microseconds under test.
     virtual void     wait(uint64_t ns) = 0;
     virtual uint64_t now_ns() = 0;
+
+    // ── Calibration ──────────────────────────────────────────────────────────
+    // Interactive `syn rat calibrate`: show a fullscreen overlay, collect
+    // `movements` human clicks into `out`, return true on success. Default: no
+    // overlay (mock/headless backends) — returns false.
+    virtual bool calibrate_rat(int movements, std::vector<CalibrationSample>& out)
+    { (void)movements; (void)out; return false; }
 };
 
 } // namespace syn

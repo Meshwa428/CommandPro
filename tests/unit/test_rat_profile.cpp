@@ -2,6 +2,8 @@
 #include <catch2/catch_approx.hpp>
 #include "synapse/rat/rat_model.h"
 #include <cstdio>
+#include <cmath>
+#include <vector>
 
 using namespace syn;
 
@@ -50,4 +52,28 @@ TEST_CASE("RatProfile::defaults matches baked constants", "[rat]") {
     RatProfile d = RatProfile::defaults();
     REQUIRE(d.overshoot_rate == Catch::Approx(0.391));
     REQUIRE(d.fitts_a == Catch::Approx(100.0));
+}
+
+TEST_CASE("estimate_profile recovers Fitts a/b from clean samples", "[rat]") {
+    // Synthesize movements with time = 120 + 80 * log2(dist/W + 1).
+    const double A = 120.0, B = 80.0;
+    std::vector<CalibrationSample> s;
+    for (int dist = 50; dist <= 1000; dist += 50) {
+        double id = std::log2(dist / 24.0 + 1.0);
+        s.push_back({ double(dist), 24.0, A + B * id, 0.05, 0.4, (dist % 150 == 0) });
+    }
+    RatProfile p = estimate_profile(s);
+    REQUIRE(p.fitts_a == Catch::Approx(A).epsilon(0.02));
+    REQUIRE(p.fitts_b == Catch::Approx(B).epsilon(0.02));
+    REQUIRE(p.curvature_scale == Catch::Approx(0.05));
+    REQUIRE(p.overshoot_rate >= 0.0);
+    REQUIRE(p.overshoot_rate <= 1.0);
+}
+
+TEST_CASE("estimate_profile falls back on degenerate input", "[rat]") {
+    RatProfile def = RatProfile::defaults();
+    REQUIRE(estimate_profile({}).fitts_a == Catch::Approx(def.fitts_a));
+    // Single sample can't fit a line → keep default a/b.
+    std::vector<CalibrationSample> one{ { 100.0, 24.0, 200.0, 0.05, 0.4, false } };
+    REQUIRE(estimate_profile(one).fitts_a == Catch::Approx(def.fitts_a));
 }
