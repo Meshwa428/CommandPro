@@ -23,4 +23,4 @@ for i = 0 to 10000 {
     lst.append(x % 10000)
 }
 qsort(lst, 0, len(lst) - 1)
-print(lst[5000])
+say(lst[5000])

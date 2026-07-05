@@ -10,4 +10,4 @@ while i < n {
     if x*x + y*y <= 1.0 { inside = inside + 1 }
     i = i + 1
 }
-print(inside * 4.0 / n)
+say(inside * 4.0 / n)

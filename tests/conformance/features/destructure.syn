@@ -1,11 +1,11 @@
 # test: features/destructure
 let m = {"x": 7, "y": 9}
 let {x, y} = m
-say(x, y)
+say "{x} {y}"
 # expect: 7 9
 let (a, b) = (1, 2)
 let z = 99
-say(a, b, z)
+say "{a} {b} {z}"
 # expect: 1 2 99
 let [p, q] = [4, 5]
 say(p + q)

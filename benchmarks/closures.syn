@@ -9,4 +9,4 @@ for i = 0 to 1000 {
         total = total + c()
     }
 }
-print(total)
+say(total)

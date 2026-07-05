@@ -4,4 +4,4 @@ fn apply_sum(f, n) {
     return total
 }
 fn square(x) { return x * x }
-print(apply_sum(square, 1000000))
+say(apply_sum(square, 1000000))

@@ -43,4 +43,4 @@ for i = 0 to 10000 {
     append(lst, seed % 10000)
 }
 msort(lst, 0, len(lst))
-print(lst[5000])
+say(lst[5000])

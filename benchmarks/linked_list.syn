@@ -14,4 +14,4 @@ while cur != none {
     total = total + cur[0]
     cur = cur[1]
 }
-print(total)
+say(total)

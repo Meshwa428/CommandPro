@@ -36,4 +36,4 @@ for i = 0 to 100000 {
     append(lst, seed % 100000)
 }
 heapsort(lst)
-print(lst[50000])
+say(lst[50000])

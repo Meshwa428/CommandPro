@@ -279,6 +279,7 @@ Stmt Parser::parse_stmt()
     }
     if (k == TokenKind::Use)      return parse_use_stmt();
     if (k == TokenKind::In)       return parse_in_scope_stmt();
+    if (k == TokenKind::Say)      return parse_say_stmt();
     if (is_cmd_keyword(k))        return parse_cmd_stmt();
 
     return parse_assign_or_expr_stmt();
@@ -780,6 +781,24 @@ Stmt Parser::parse_assign_or_expr_stmt()
 // ─────────────────────────────────────────────────────────────────────────────
 // Command statements (desugared to method calls)
 // ─────────────────────────────────────────────────────────────────────────────
+
+// say EXPR  →  say(EXPR)   (bare `say` prints a blank line)
+Stmt Parser::parse_say_stmt()
+{
+    Span sp = advance().span;
+
+    auto callee = std::make_unique<IdentExpr>();
+    callee->span = sp; callee->name = "say";
+
+    auto call = std::make_unique<CallExpr>();
+    call->span = sp; call->callee = std::move(callee);
+    if (!at_term())
+        call->args.push_back(pos_arg(parse_expr()));
+
+    auto stmt = std::make_unique<ExprStmt>();
+    stmt->span = sp; stmt->expr = std::move(call);
+    return stmt;
+}
 
 Stmt Parser::parse_cmd_stmt()
 {

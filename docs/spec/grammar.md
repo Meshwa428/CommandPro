@@ -188,6 +188,7 @@ stmt ::=
   | continue_stmt
   | use_stmt
   | in_scope_stmt
+  | say_stmt        /* console output — the only print verb */
   | cmd_stmt        /* automation command — starts with command keyword */
   | expr_stmt       /* expression used as statement (calls, assignments) */
 ```
@@ -411,7 +412,21 @@ in_scope_stmt ::= 'in' STRING_LIT block
    Example: in "Firefox" { tap input "Search" } */
 ```
 
-#### 2.3.15 Expression Statement
+#### 2.3.15 Say Statement
+
+```ebnf
+say_stmt ::= 'say' [ expr ]
+
+/* Prints one value to stdout followed by a newline.
+   Space form, no parentheses: `say "hello {name}"`, `say 2 + 2`.
+   A bare `say` prints an empty line.
+   `say` is the sole print verb — there is no `print`/`println`
+   (spec 001-language.md §"what changed from v1").
+   Multiple values are printed via interpolation, not extra args:
+   `say "{k} {v}"`, never `say k, v`. */
+```
+
+#### 2.3.16 Expression Statement
 
 ```ebnf
 expr_stmt ::= expr
@@ -908,6 +923,7 @@ stmt ::=
   | 'continue'
   | lvalue_list '=' expr_list       /* assignment */
   | lvalue aug_op expr              /* augmented assignment */
+  | 'say'    expr?                  /* console output — sole print verb */
   | cmd_stmt                        /* automation command */
   | expr                            /* expression statement */
 

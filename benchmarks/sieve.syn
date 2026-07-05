@@ -18,4 +18,4 @@ let count = 0
 for k = 0 to n+1 {
     if sieve[k] { count = count + 1 }
 }
-print(count)
+say(count)

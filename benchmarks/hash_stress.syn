@@ -17,4 +17,4 @@ while i < n {
     if v != none { total = total + v }
     i = i + 1
 }
-print(total)
+say(total)

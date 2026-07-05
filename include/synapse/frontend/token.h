@@ -59,6 +59,7 @@ enum class TokenKind : uint16_t
     KwTuple,     // tuple
 
     // ── Command keywords ──────────────────────────────────────────────────
+    Say,
     Mouse,
     Click,
     Drag,

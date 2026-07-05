@@ -18,4 +18,4 @@ for i = 0 to n {
         c[i][j] = s
     }
 }
-print(c[n-1][n-1])
+say(c[n-1][n-1])

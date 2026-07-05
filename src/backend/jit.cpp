@@ -153,7 +153,7 @@ static bool check_int_stmt(const StmtNode* s, VarSet& ivars, const VarSet& ifns,
         // for __main__: only allow print(int_args) or call to int fn
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if ((id->name == "print" || id->name == "say")) {
+                if ((id->name == "say")) {
                     for (auto& arg : ce->args)
                         if (!is_int_expr(arg.value.get(), ivars, ifns, ctx)) return false;
                     return true;
@@ -293,7 +293,7 @@ static bool check_float_stmt(const StmtNode* s, VarSet& fvars, const VarSet& ffn
         if (!for_main) return true;
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if ((id->name == "print" || id->name == "say")) {
+                if ((id->name == "say")) {
                     for (auto& arg : ce->args)
                         if (!is_float_expr(arg.value.get(), fvars, ffns)) return false;
                     return true;
@@ -488,7 +488,7 @@ static bool check_mixed_stmt(const StmtNode* s, VTMap& vt,
         if (!for_main) return true;
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if ((id->name == "print" || id->name == "say")) {
+                if ((id->name == "say")) {
                     for (auto& arg : ce->args)
                         if (!infer_type(arg.value.get(), vt, ifns, ffns)) return false;
                     return true;
@@ -679,7 +679,7 @@ static void emit_int_stmt(const StmtNode* s, std::ostream& o, const VarSet& ifns
     if (auto* n = dynamic_cast<const ExprStmt*>(s)) {
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if ((id->name == "print" || id->name == "say")) {
+                if ((id->name == "say")) {
                     bool first = true;
                     for (auto& arg : ce->args) {
                         if (!first) o << sp << "fputc(' ', stdout);\n";
@@ -844,7 +844,7 @@ static void emit_float_stmt(const StmtNode* s, std::ostream& o, const VarSet& ff
     if (auto* n = dynamic_cast<const ExprStmt*>(s)) {
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if ((id->name == "print" || id->name == "say")) {
+                if ((id->name == "say")) {
                     bool first = true;
                     for (auto& arg : ce->args) {
                         if (!first) o << sp << "fputc(' ', stdout);\n";
@@ -1154,7 +1154,7 @@ static void emit_mixed_stmt(const StmtNode* s, std::ostream& o, const VTMap& vt,
     if (auto* n = dynamic_cast<const ExprStmt*>(s)) {
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if ((id->name == "print" || id->name == "say")) {
+                if ((id->name == "say")) {
                     bool first = true;
                     for (auto& arg : ce->args) {
                         if (!first) o << sp << "fputc(' ', stdout);\n";
@@ -1796,7 +1796,7 @@ static bool check_list_stmt(const StmtNode* s, VTMap& vt, LVMap& lv,
         if (!for_main && !all_fns) return true;
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if ((id->name == "print" || id->name == "say")) {
+                if ((id->name == "say")) {
                     if (!for_main) return true;
                     for (auto& arg : ce->args) {
                         if (infer_type_l(arg.value.get(), vt, lv, ifns, ffns)) continue;
@@ -2157,7 +2157,7 @@ static void emit_list_stmt(const StmtNode* s, std::ostream& o, const VTMap& vt, 
     if (auto* n = dynamic_cast<const ExprStmt*>(s)) {
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if ((id->name == "print" || id->name == "say")) {
+                if ((id->name == "say")) {
                     bool first = true;
                     for (auto& arg : ce->args) {
                         if (!first) o << sp << "fputc(' ', stdout);\n";
@@ -2493,7 +2493,7 @@ static bool vjit_call_ok(const CallExpr* c, const VarSet& vfns, const VarSet& lo
     bool ok_callee = vfns.count(id->name) ||
                      (id->name == "len" && c->args.size() == 1) ||
                      (id->name == "append" && c->args.size() == 2) ||
-                     (id->name == "print" || id->name == "say") ||
+                     (id->name == "say") ||
                      (all_fns && all_fns->count(id->name));
     if (!ok_callee) return false;
     for (auto& a : c->args) if (!vjit_expr_ok(a.value.get(), vfns, locals, all_fns)) return false;
@@ -2953,7 +2953,7 @@ static std::string vjit_emit(const ExprNode* e, VJitCtx& c, int ind)
             c.o << sp << "uint64_t " << t << " = syn_none_val();\n";
             return t;
         }
-        if ((id->name == "print" || id->name == "say")) {
+        if ((id->name == "say")) {
             if (as.size() == 1) {
                 c.o << sp << "syn_rt_print1(" << as[0] << ");\n";
             } else if (as.size() > 1) {

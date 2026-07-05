@@ -19,4 +19,4 @@ for py = 0 to 300 {
         if escaped { count = count + 1 }
     }
 }
-print(count)
+say(count)

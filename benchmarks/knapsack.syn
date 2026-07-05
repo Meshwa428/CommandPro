@@ -26,4 +26,4 @@ for i = 1 to n + 1 {
         dp[cur + ww] = prev
     }
 }
-print(dp[n * w + cap])
+say(dp[n * w + cap])

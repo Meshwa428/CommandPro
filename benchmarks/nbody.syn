@@ -105,4 +105,4 @@ bodies[5] = -pz / solar_mass
 let steps = 50000
 let s = 0
 while s < steps { advance(0.01); s = s + 1 }
-print(energy())
+say(energy())

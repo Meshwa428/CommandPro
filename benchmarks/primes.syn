@@ -12,4 +12,4 @@ let count = 0
 for n = 2 to 50000 {
     if is_prime(n) { count = count + 1 }
 }
-print(count)
+say(count)

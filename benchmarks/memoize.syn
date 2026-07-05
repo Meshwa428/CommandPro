@@ -7,4 +7,4 @@ fn fib_memo(n) {
     cache[n] = r
     return r
 }
-print(fib_memo(35))
+say(fib_memo(35))

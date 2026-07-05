@@ -389,6 +389,7 @@ TokenKind Lexer::keyword_kind(std::string_view word)
     if (word == "map")      return TokenKind::KwMap;
     if (word == "tuple")    return TokenKind::KwTuple;
 
+    if (word == "say")      return TokenKind::Say;
     if (word == "mouse")    return TokenKind::Mouse;
     if (word == "click")    return TokenKind::Click;
     if (word == "drag")     return TokenKind::Drag;

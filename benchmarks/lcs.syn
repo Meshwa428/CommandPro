@@ -18,4 +18,4 @@ for i = 1 to m + 1 {
         }
     }
 }
-print(dp[m*w+n])
+say(dp[m*w+n])

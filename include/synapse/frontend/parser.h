@@ -54,6 +54,7 @@ private:
     Stmt  parse_assign_or_expr_stmt();
 
     // ── Command parsers (desugar to CallExpr) ────────────────────────────────
+    Stmt parse_say_stmt();
     Stmt parse_cmd_stmt();
     Stmt parse_mouse_cmd();
     Stmt parse_click_cmd();

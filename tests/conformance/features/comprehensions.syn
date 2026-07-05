@@ -10,10 +10,10 @@ let m = {"a": 1, "b": 2}
 say([k for k, v in m])
 # expect: [a, b]
 let sq = {x: x * x for x in [1, 2, 3]}
-say(sq[2], sq[3])
+say "{sq[2]} {sq[3]}"
 # expect: 4 9
 let inv = {v: k for k, v in m}
-say(inv[1], inv[2])
+say "{inv[1]} {inv[2]}"
 # expect: a b
 let big = {k: v for k, v in m if v > 1}
 say(big["b"])

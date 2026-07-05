@@ -91,6 +91,7 @@ std::string_view Token::kind_name(TokenKind k)
         case TokenKind::KwList:        return "KwList";
         case TokenKind::KwMap:         return "KwMap";
         case TokenKind::KwTuple:       return "KwTuple";
+        case TokenKind::Say:           return "Say";
         case TokenKind::Mouse:         return "Mouse";
         case TokenKind::Click:         return "Click";
         case TokenKind::Drag:          return "Drag";

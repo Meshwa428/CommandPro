@@ -29,15 +29,6 @@ extern "C" void syn_rt_drain_jit_pool();
 
 static void register_stdlib(syn::VM& vm)
 {
-    vm.define_native("print", [&vm](int argc, syn::Value* args) -> syn::Value {
-        for (int i = 0; i < argc; ++i) {
-            if (i) std::cout << ' ';
-            std::cout << syn::val_to_string(args[i]);
-        }
-        std::cout << '\n';
-        return syn::Value::none_val();
-    });
-
     vm.define_native("say", [](int argc, syn::Value* args) -> syn::Value {
         for (int i = 0; i < argc; ++i) {
             if (i) std::cout << ' ';

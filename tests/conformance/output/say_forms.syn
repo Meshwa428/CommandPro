@@ -1,0 +1,15 @@
+# test: output/say_forms
+# Documented space-form `say` (spec 001-language.md): no parens required.
+let name = "world"
+say "hello {name}"
+# expect: hello world
+say 2 + 2
+# expect: 4
+let xs = [1, 2, 3]
+say xs
+# expect: [1, 2, 3]
+say
+# expect:
+# Paren form remains valid (say is also callable).
+say("paren too")
+# expect: paren too

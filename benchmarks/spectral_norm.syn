@@ -49,4 +49,4 @@ for i = 0 to n {
     vbv = vbv + u[i] * v[i]
     vv = vv + v[i] * v[i]
 }
-print(sqrt(vbv / vv))
+say(sqrt(vbv / vv))

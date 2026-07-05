@@ -21,4 +21,4 @@ while d <= max_depth {
     }
     d = d + 2
 }
-print(total)
+say(total)
