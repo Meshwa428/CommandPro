@@ -268,10 +268,20 @@ std::string val_to_string(Value v)
 {
     if (v.is_int())        return std::to_string(v.as_int());
     if (v.is_float()) {
+        // Shortest round-trip decimal, preferring fixed notation — matches
+        // Python repr and the JIT's syn_print_double (they must agree).
+        double d = v.as_float();
+        if (d != d)            return "nan";
+        if (d ==  HUGE_VAL)    return "inf";
+        if (d == -HUGE_VAL)    return "-inf";
         char buf[32];
-        auto [p, ec] = std::to_chars(buf, buf + sizeof(buf), v.as_float(),
-                                     std::chars_format::general);
-        return std::string(buf, p);
+        for (int prec = 1; prec <= 17; ++prec) {
+            std::snprintf(buf, sizeof(buf), "%.*g", prec, d);
+            double check;
+            std::sscanf(buf, "%lf", &check);
+            if (check == d) break;
+        }
+        return std::string(buf);
     }
     if (v.is_true())       return "true";
     if (v.is_false())      return "false";
