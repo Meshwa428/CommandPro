@@ -35,6 +35,11 @@ BENCHMARKS = [
     "mergesort", "heapsort",
     # hash map
     "hash_stress",
+    # realistic/mixed workloads — microbenchmarks above give a general idea
+    # but don't exercise string-keyed maps, nested structures, heterogeneous
+    # per-iteration types, or sustained alloc churn on their own.
+    "string_table", "json_like", "recursion_calls", "string_building",
+    "closures_deep", "mixed_types", "gc_pressure",
 ]
 ROUNDS = 5
 

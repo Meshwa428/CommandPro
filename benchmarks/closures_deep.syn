@@ -1,0 +1,18 @@
+fn make_adder(n) {
+    return fn(x) { return x + n }
+}
+let fns = []
+let i = 0
+while i < 200 {
+    fns.append(make_adder(i))
+    i = i + 1
+}
+let total = 0
+let round = 0
+while round < 500 {
+    for f in fns {
+        total = total + f(round)
+    }
+    round = round + 1
+}
+say(total)

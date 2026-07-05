@@ -1,0 +1,16 @@
+let n = 3000
+let records = []
+let i = 0
+while i < n {
+    let rec = { id: i, score: i * 2, tags: [i % 3, i % 5, i % 7] }
+    records.append(rec)
+    i = i + 1
+}
+let total = 0
+for rec in records {
+    total = total + rec.id + rec.score
+    for t in rec.tags {
+        total = total + t
+    }
+}
+say(total)
