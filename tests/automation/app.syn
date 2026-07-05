@@ -1,0 +1,7 @@
+# test: automation/app
+run "firefox"
+# expect-platform: AppRun(firefox)
+open "report.pdf"
+# expect-platform: AppOpen(report.pdf)
+close "Firefox"
+# expect-platform: AppClose(Firefox)

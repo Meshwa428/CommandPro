@@ -1,0 +1,3 @@
+# test: automation/mouse_move
+mouse 300, 400
+# expect-platform: MouseMove(300, 400)

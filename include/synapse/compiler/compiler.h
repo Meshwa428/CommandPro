@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <vector>
 #include <string>
 #include <unordered_map>
@@ -63,10 +64,12 @@ private:
     // ── Function compilation ─────────────────────────────────────────────────
     // out_upvalues receives the inner fn's capture list so caller can emit
     // the per-upvalue descriptor instructions right after CLOSURE.
+    // params (when given) drives the default-value preamble and *rest flag.
     ObjFunction* compile_function(const std::string& name, int arity,
                                   const std::vector<std::string>& param_names,
                                   const Block& body,
-                                  std::vector<UpvalueInfo>* out_upvalues = nullptr);
+                                  std::vector<UpvalueInfo>* out_upvalues = nullptr,
+                                  const std::vector<Param>* params = nullptr);
 
     // ── Statement compilation ─────────────────────────────────────────────────
     void compile_stmt(const StmtNode* stmt);
@@ -105,6 +108,14 @@ private:
     int  compile_tuple(const TupleExpr* e, int dest);
     int  compile_fn_expr(const FnExpr* e, int dest);
     int  compile_match_expr(const MatchExpr* e, int dest);
+    int  compile_pipe(const BinaryExpr* e, int dest);
+    int  compile_slice(const SliceExpr* e, int dest);
+    void compile_pattern_match(const Pattern& pat, int subj, PatchList& fail);
+    int  compile_list_comp(const ListCompExpr* e, int dest);
+    int  compile_map_comp(const MapCompExpr* e, int dest);
+    // Emits the nested comprehension loops; `body` emits the innermost code.
+    void compile_comp_level(const std::vector<const CompFor*>& fors, std::size_t level,
+                            const std::function<void()>& body);
 
     // ── Register management ───────────────────────────────────────────────────
     int  alloc_reg();           // allocate a temporary register
@@ -139,6 +150,11 @@ private:
     // ── Lvalue helpers ───────────────────────────────────────────────────────
     void assign_to(const ExprNode* lval, int src_reg);
 
+    // ── Diagnostics ──────────────────────────────────────────────────────────
+    // Emit a compile error for a grammar feature the parser accepts but codegen
+    // doesn't implement yet. Never drop a construct silently.
+    void unsupported(Span span, const std::string& what);
+
     // ── Loop/break/continue stack ─────────────────────────────────────────────
     struct LoopInfo {
         PatchList breaks;
@@ -153,6 +169,11 @@ private:
     VM&           m_vm;
     FnState*      m_current = nullptr;
     bool          m_module_mode = false;
+
+    // Line of the statement currently being compiled — set once per
+    // compile_stmt() call, used by emit() as the default for runtime error
+    // reporting (statement-level granularity, not per-expression).
+    uint32_t      m_current_line = 0;
 };
 
 } // namespace syn

@@ -2,8 +2,14 @@
 #include <string>
 #include <vector>
 #include "synapse/common/source.h"
+#include "synapse/common/rt_error.h"
 
 namespace syn {
+
+// Prints a RuntimeError clang-style: file:line, source snippet, then the
+// Synapse-level call stack. Declared here so both compile-time diagnostics
+// and runtime errors share one formatter.
+void print_runtime_error(const RuntimeError& err, const Source& src);
 
 enum class DiagLevel { Error, Warning, Note };
 

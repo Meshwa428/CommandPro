@@ -1,0 +1,6 @@
+# test: automation/drag
+drag 10, 10, 400, 300
+# expect-platform: MouseMove(10, 10)
+# expect-platform: MouseHold(left)
+# expect-platform: MouseMove(400, 300)
+# expect-platform: MouseRelease(left)

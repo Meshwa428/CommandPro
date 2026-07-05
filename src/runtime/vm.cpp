@@ -14,14 +14,97 @@ namespace syn {
 
 thread_local VM* tls_vm = nullptr;
 
-VM::VM()
+// Line for the instruction just executed by NEXT_INS() (pc already advanced
+// past it), looked up in the chunk's parallel line table.
+static uint32_t line_at(Chunk* ck, uint64_t* pc)
 {
-    for (int i = 0; i < REGISTER_STACK; ++i) m_stack[i] = Value::none_val();
+    if (!ck || !pc) return 0;
+    size_t idx = size_t(pc - ck->code.data());
+    if (idx == 0 || idx - 1 >= ck->lines.size()) return 0;
+    return ck->lines[idx - 1];
+}
+
+static std::vector<TraceEntry> build_trace(const CallFrame* frames, int frame_count,
+                                            uint32_t top_line)
+{
+    std::vector<TraceEntry> trace;
+    for (int i = frame_count - 1; i >= 0; --i) {
+        const CallFrame& f = frames[i];
+        std::string name = (f.closure && f.closure->fn && !f.closure->fn->name.empty())
+                                ? f.closure->fn->name : "__main__";
+        uint32_t ln = (i == frame_count - 1) ? top_line : line_at(f.chunk, f.pc);
+        trace.push_back({std::move(name), ln});
+    }
+    return trace;
+}
+
+// Builtin VM errors are caught as a plain map ({"message": ..., "code": ...})
+// rather than the separate ObjError type — field access (`e.message`) only
+// works on maps (GET_FIELD/GET_FIELDK), and this way `catch e` sees the same
+// shape whether the throw came from user code (`throw {...}`) or a VM error.
+Value VM::make_error_payload(const std::string& code, const std::string& msg)
+{
+    ObjMap* m = alloc_map();
+    m->set(Value::from_ptr(intern_string("message", 7)), Value::from_ptr(alloc_string(msg)));
+    m->set(Value::from_ptr(intern_string("code", 4)), Value::from_ptr(alloc_string(code)));
+    return Value::from_ptr(m);
+}
+
+void VM::raise(const char* code, std::string msg, Chunk* ck, uint64_t* pc)
+{
+    uint32_t top_line = line_at(ck, pc);
+    auto trace = build_trace(m_frames, m_frame_count, top_line);
+    Value payload = make_error_payload(code, msg);
+    throw RuntimeError(code, std::move(msg), top_line, std::move(trace), payload);
+}
+
+void VM::raise(const char* code, std::string msg)
+{
+    if (m_frame_count > 0) {
+        const CallFrame& f = m_frames[m_frame_count - 1];
+        raise(code, std::move(msg), f.chunk, f.pc);
+    }
+    Value payload = make_error_payload(code, msg);
+    throw RuntimeError(code, std::move(msg), 0, {}, payload);
+}
+
+void VM::raise_value(Value payload, Chunk* ck, uint64_t* pc)
+{
+    uint32_t top_line = line_at(ck, pc);
+    auto trace = build_trace(m_frames, m_frame_count, top_line);
+    throw RuntimeError("E0118", val_to_string(payload), top_line, std::move(trace), payload);
+}
+
+void VM::drop_stale_try_handlers()
+{
+    while (!m_try_handlers.empty() && m_try_handlers.back().frame_idx > m_frame_count)
+        m_try_handlers.pop_back();
+}
+
+VM::VM()
+    : m_stack(new Value[REGISTER_STACK]), m_frames(new CallFrame[MAX_FRAMES])
+{
+    // Eagerly zero only the old default budget (64 frames' worth) — matches
+    // pre-existing init cost. Deeper recursion zeroes its window on demand
+    // via ensure_stack_window() the first time it's actually reached.
+    m_stack_zeroed = 256 * 64;
+    for (int i = 0; i < m_stack_zeroed; ++i) m_stack[i] = Value::none_val();
     m_globals.reserve(1024);  // keep pointers stable for GET_GLOBAL inline cache
+}
+
+void VM::ensure_stack_window(int base)
+{
+    int need = base + 256;
+    if (need <= m_stack_zeroed) return;
+    if (need > REGISTER_STACK) need = REGISTER_STACK;
+    for (int i = m_stack_zeroed; i < need; ++i) m_stack[i] = Value::none_val();
+    m_stack_zeroed = need;
 }
 
 VM::~VM()
 {
+    delete[] m_stack;
+    delete[] m_frames;
     // Free GC list
     Obj* cur = m_gc_list;
     while (cur) {
@@ -81,7 +164,8 @@ ObjString* VM::alloc_string(const char* data, size_t len)
     if (m_str_pool) {
         obj = m_str_pool;
         m_str_pool = static_cast<ObjString*>(obj->gc_next);
-        obj->gc_mark = false;
+        // gc_mark is already false: sweep only pools unmarked objects, and
+        // fresh `new` defaults to false too — no need to reset it here.
         obj->data.assign(data, len);  // reuses buffer if capacity >= len
     } else {
         obj = new ObjString(std::string(data, len));
@@ -98,8 +182,8 @@ ObjString* VM::alloc_string_raw()
     if (m_str_pool) {
         obj = m_str_pool;
         m_str_pool = static_cast<ObjString*>(obj->gc_next);
-        obj->gc_mark = false;
-        // data already cleared by GC sweep; capacity preserved
+        // data already cleared by GC sweep; capacity preserved; gc_mark
+        // already false (see alloc_string)
     } else {
         obj = new ObjString("");
     }
@@ -174,7 +258,6 @@ ObjList* VM::alloc_list()
     if (m_list_pool) {
         obj = m_list_pool;
         m_list_pool = static_cast<ObjList*>(obj->gc_next);
-        obj->gc_mark = false;
         obj->kind = ObjKind::List;  // reset — pooled tuples must become lists
         obj->items.clear();
     } else {
@@ -192,7 +275,6 @@ ObjInt* VM::alloc_int(int64_t v)
     if (m_int_pool) {
         obj = m_int_pool;
         m_int_pool = reinterpret_cast<ObjInt*>(obj->gc_next);
-        obj->gc_mark = false;
         obj->value = v;
     } else {
         obj = new ObjInt(v);
@@ -209,7 +291,6 @@ ObjMap* VM::alloc_map()
     if (m_map_pool) {
         obj = m_map_pool;
         m_map_pool = static_cast<ObjMap*>(obj->gc_next);
-        obj->gc_mark = false;
         // pairs, str_idx, int_idx already cleaned in GC sweep
     } else {
         obj = new ObjMap();
@@ -592,7 +673,7 @@ Value VM::get_global(const std::string& name) const {
 
 Value VM::call_value(Value callee, int nargs, Value* args)
 {
-    if (!callee.is_ptr()) throw std::runtime_error("cannot call non-function");
+    if (!callee.is_ptr()) raise("E0100", "cannot call non-function");
     Obj* o = callee.as_ptr();
 
     if (o->kind == ObjKind::Native) {
@@ -606,12 +687,14 @@ Value VM::call_value(Value callee, int nargs, Value* args)
         // wrap bare function
         closure = alloc<ObjClosure>(static_cast<ObjFunction*>(o));
     } else {
-        throw std::runtime_error("not callable");
+        raise("E0101", "not callable");
     }
 
-    if (m_frame_count >= MAX_FRAMES) throw std::runtime_error("stack overflow");
+    if (m_frame_count >= MAX_FRAMES) raise("E0102", "stack overflow");
 
     int base = int(args - m_stack);
+    ensure_stack_window(base);
+    fixup_args(closure->fn, nargs, args);
     CallFrame& frame = m_frames[m_frame_count++];
     frame.closure = closure;
     frame.chunk   = closure->fn->chunk;
@@ -622,6 +705,23 @@ Value VM::call_value(Value callee, int nargs, Value* args)
     Value result = run_frame(frame);
     --m_frame_count;
     return result;
+}
+
+// Adjust the incoming arg window for defaults / *rest before the frame runs:
+// pack extras into a list for variadic fns, fill missing params with none
+// (the callee's preamble then evaluates defaults for none-valued params).
+void VM::fixup_args(ObjFunction* fn, int nargs, Value* regs)
+{
+    int fixed = fn->has_rest ? fn->arity - 1 : fn->arity;
+    if (fn->has_rest) {
+        auto* rest = alloc_list();  // args still rooted in regs during alloc
+        for (int i = fixed; i < nargs; ++i)
+            rest->items.push_back(regs[i]);
+        regs[fixed] = Value::from_ptr(rest);
+        if (nargs > fixed) nargs = fixed;  // extras consumed
+    }
+    for (int i = nargs; i < fixed; ++i)
+        regs[i] = Value::none_val();
 }
 
 // ── Main execution loop ───────────────────────────────────────────────────────
@@ -641,10 +741,23 @@ Value VM::run_frame(CallFrame& outer_frame)
     // label table for 85 sparse opcodes isn't worth the maintenance yet.
 #define NEXT_INS() (*pc++)
 #define REGS regs
+    // GC safepoint — moved off the per-instruction hot path (used to run
+    // unconditionally before every single instruction, including pure
+    // arithmetic/moves/compares that can never allocate). Real allocations
+    // only happen at: backward jumps (loop bodies end with one; this bounds
+    // how much a loop can allocate before the next check), and CALL/INVOKE
+    // (natives run arbitrary C++ that can allocate without ever going
+    // through this dispatch loop). Straight-line non-looping code between
+    // safepoints is bounded in practice — this is the standard "safepoint at
+    // loop back-edges and calls" placement used by real VMs/JITs.
+#define GC_CHECK() do { if (__builtin_expect(m_alloc_count >= m_gc_threshold, 0)) collect_garbage(); } while (0)
 
+    // Outer retry loop: a caught exception resumes dispatch at the catch
+    // handler's pc by just re-entering the inner loop with updated locals,
+    // rather than needing a goto out of the catch block.
     while (true) {
-        // GC at instruction boundary: all live values are settled in registers.
-        if (__builtin_expect(m_alloc_count >= m_gc_threshold, 0)) collect_garbage();
+    try {
+    while (true) {
         uint64_t w = NEXT_INS();
         Op op = INS_OP(w);
 
@@ -690,7 +803,7 @@ Value VM::run_frame(CallFrame& outer_frame)
             const std::string& name = as_str(ck->constants[ki]).data;
             auto it = m_globals.find(name);
             if (it == m_globals.end())
-                throw std::runtime_error("undefined variable: " + name);
+                raise("E0103", "undefined variable: " + name, ck, pc);
             ck->global_cache[ki] = &it->second;
             REGS[a] = it->second;
             break;
@@ -773,17 +886,19 @@ Value VM::run_frame(CallFrame& outer_frame)
         case Op::NOT: { uint8_t a=INS_A(w),b=INS_B(w); REGS[a]=Value::from_bool(!REGS[b].truthy()); break; }
 
         // ── Fused compare-branch ─────────────────────────────────────────────
-        case Op::JEQ:  { uint8_t a=INS_A(w),b=INS_B(w); if( val_eq(REGS[a],REGS[b])) pc+=INS_OFF32(w); break; }
-        case Op::JNEQ: { uint8_t a=INS_A(w),b=INS_B(w); if(!val_eq(REGS[a],REGS[b])) pc+=INS_OFF32(w); break; }
-        case Op::JLT:  { uint8_t a=INS_A(w),b=INS_B(w); if( val_lt(REGS[a],REGS[b])) pc+=INS_OFF32(w); break; }
-        case Op::JLTE: { uint8_t a=INS_A(w),b=INS_B(w); if( val_lte(REGS[a],REGS[b]))pc+=INS_OFF32(w); break; }
-        case Op::JGT:  { uint8_t a=INS_A(w),b=INS_B(w); if(!val_lte(REGS[a],REGS[b]))pc+=INS_OFF32(w); break; }
-        case Op::JGTE: { uint8_t a=INS_A(w),b=INS_B(w); if(!val_lt(REGS[a],REGS[b])) pc+=INS_OFF32(w); break; }
-        case Op::JT:   { uint8_t a=INS_A(w); if( REGS[a].truthy())  pc+=INS_IMM40(w); break; }
-        case Op::JF:   { uint8_t a=INS_A(w); if(!REGS[a].truthy())  pc+=INS_IMM40(w); break; }
-        case Op::JNIL: { uint8_t a=INS_A(w); if( REGS[a].is_none()) pc+=INS_IMM40(w); break; }
-        case Op::JNNIL:{ uint8_t a=INS_A(w); if(!REGS[a].is_none()) pc+=INS_IMM40(w); break; }
-        case Op::JUMP: { pc += INS_IMM48(w); break; }
+        // Backward-taken jumps are loop iteration boundaries — the GC
+        // safepoint lives here instead of at the top of the dispatch loop.
+        case Op::JEQ:  { uint8_t a=INS_A(w),b=INS_B(w); if( val_eq(REGS[a],REGS[b])) { int64_t o=INS_OFF32(w); pc+=o; if (o<0) GC_CHECK(); } break; }
+        case Op::JNEQ: { uint8_t a=INS_A(w),b=INS_B(w); if(!val_eq(REGS[a],REGS[b])) { int64_t o=INS_OFF32(w); pc+=o; if (o<0) GC_CHECK(); } break; }
+        case Op::JLT:  { uint8_t a=INS_A(w),b=INS_B(w); if( val_lt(REGS[a],REGS[b])) { int64_t o=INS_OFF32(w); pc+=o; if (o<0) GC_CHECK(); } break; }
+        case Op::JLTE: { uint8_t a=INS_A(w),b=INS_B(w); if( val_lte(REGS[a],REGS[b])){ int64_t o=INS_OFF32(w); pc+=o; if (o<0) GC_CHECK(); } break; }
+        case Op::JGT:  { uint8_t a=INS_A(w),b=INS_B(w); if(!val_lte(REGS[a],REGS[b])){ int64_t o=INS_OFF32(w); pc+=o; if (o<0) GC_CHECK(); } break; }
+        case Op::JGTE: { uint8_t a=INS_A(w),b=INS_B(w); if(!val_lt(REGS[a],REGS[b])) { int64_t o=INS_OFF32(w); pc+=o; if (o<0) GC_CHECK(); } break; }
+        case Op::JT:   { uint8_t a=INS_A(w); if( REGS[a].truthy())  { int64_t o=INS_IMM40(w); pc+=o; if (o<0) GC_CHECK(); } break; }
+        case Op::JF:   { uint8_t a=INS_A(w); if(!REGS[a].truthy())  { int64_t o=INS_IMM40(w); pc+=o; if (o<0) GC_CHECK(); } break; }
+        case Op::JNIL: { uint8_t a=INS_A(w); if( REGS[a].is_none()) { int64_t o=INS_IMM40(w); pc+=o; if (o<0) GC_CHECK(); } break; }
+        case Op::JNNIL:{ uint8_t a=INS_A(w); if(!REGS[a].is_none()) { int64_t o=INS_IMM40(w); pc+=o; if (o<0) GC_CHECK(); } break; }
+        case Op::JUMP: { int64_t o=INS_IMM48(w); pc += o; if (o<0) GC_CHECK(); break; }
 
         // ── Strings ──────────────────────────────────────────────────────────
         case Op::CONCAT: {
@@ -822,13 +937,46 @@ Value VM::run_frame(CallFrame& outer_frame)
                     REGS[a] = Value::from_int(int64_t(static_cast<ObjList*>(o)->items.size()));
                 else if (o->kind == ObjKind::Map)
                     REGS[a] = Value::from_int(int64_t(static_cast<ObjMap*>(o)->pairs.size()));
-                else throw std::runtime_error("len() on non-collection");
+                else raise("E0104", "len() on non-collection", ck, pc);
             }
-            else throw std::runtime_error("len() on non-collection");
+            else raise("E0104", "len() on non-collection", ck, pc);
             break;
         }
 
         // ── Collections ──────────────────────────────────────────────────────
+        case Op::ITER_KEYS: {
+            uint8_t a=INS_A(w),b=INS_B(w);
+            Value v = REGS[b];
+            if (!v.is_ptr()) raise("E0114", "cannot iterate this value", ck, pc);
+            Obj* o = v.as_ptr();
+            auto* list = alloc_list();
+            if (o->kind == ObjKind::Map) {
+                for (auto& p : static_cast<ObjMap*>(o)->pairs)
+                    list->items.push_back(p.first);
+            } else if (o->kind == ObjKind::List || o->kind == ObjKind::Tuple) {
+                std::size_t n = static_cast<ObjList*>(o)->items.size();
+                list->items.reserve(n);
+                for (std::size_t i = 0; i < n; ++i)
+                    list->items.push_back(Value::from_int(int64_t(i)));
+            } else {
+                raise("E0114", "cannot iterate this value", ck, pc);
+            }
+            REGS[a] = Value::from_ptr(list);
+            break;
+        }
+        case Op::ITER_SEQ: {
+            uint8_t a=INS_A(w),b=INS_B(w);
+            Value v = REGS[b];
+            if (val_is_map(v)) {
+                auto* list = alloc_list();
+                for (auto& p : as_map(v).pairs)
+                    list->items.push_back(p.first);
+                REGS[a] = Value::from_ptr(list);
+            } else {
+                REGS[a] = v;
+            }
+            break;
+        }
         case Op::NEW_LIST: {
             uint8_t a=INS_A(w), b=INS_B(w), n=INS_C(w);
             auto* list = alloc_list();
@@ -858,17 +1006,17 @@ Value VM::run_frame(CallFrame& outer_frame)
             if (obj.is_ptr()) {
                 auto* lo = static_cast<ObjList*>(obj.as_ptr());
                 if (uint8_t(lo->kind) - 1u <= 1u) {
-                    if (!key.is_int()) throw std::runtime_error("list index must be int");
+                    if (!key.is_int()) raise("E0105", "list index must be int", ck, pc);
                     int64_t idx = key.as_int();
                     auto& v = lo->items;
                     if (idx < 0) idx += int64_t(v.size());
                     if (idx < 0 || idx >= int64_t(v.size()))
-                        throw std::runtime_error("list index out of range");
+                        raise("E0106", "list index out of range", ck, pc);
                     REGS[a] = v[size_t(idx)];
                     break;
                 }
             }
-            throw std::runtime_error("cannot index this type");
+            raise("E0107", "cannot index this type", ck, pc);
         }
         case Op::SET_FIELD: {
             // A=val B=obj C=key
@@ -876,22 +1024,22 @@ Value VM::run_frame(CallFrame& outer_frame)
             Value obj = REGS[b]; Value key = REGS[c]; Value val = REGS[a];
             if (val_is_map(obj))  { as_map(obj).set(key, val); break; }
             if (obj.is_ptr() && obj.as_ptr()->kind <= ObjKind::Tuple) {
-                if (!key.is_int()) throw std::runtime_error("list index must be int");
+                if (!key.is_int()) raise("E0105", "list index must be int", ck, pc);
                 int64_t idx = key.as_int();
                 auto& v = static_cast<ObjList*>(obj.as_ptr())->items;
                 if (idx < 0) idx += int64_t(v.size());
                 if (idx < 0 || idx >= int64_t(v.size()))
-                    throw std::runtime_error("list index out of range");
+                    raise("E0106", "list index out of range", ck, pc);
                 v[idx] = val;
                 break;
             }
-            throw std::runtime_error("cannot index-assign this type");
+            raise("E0108", "cannot index-assign this type", ck, pc);
         }
         case Op::GET_FIELDK: {
             uint8_t a=INS_A(w),b=INS_B(w);
             Value key = ck->constants[INS_IMM40(w)];
             Value obj = REGS[b];
-            if (!val_is_map(obj)) throw std::runtime_error("field access on non-map");
+            if (!val_is_map(obj)) raise("E0109", "field access on non-map", ck, pc);
             ObjMap& m = as_map(obj);
             if (!m.str_idx && !m.int_flat) {
                 // Small map: monomorphic inline cache
@@ -920,7 +1068,7 @@ Value VM::run_frame(CallFrame& outer_frame)
         case Op::SET_FIELDK: {
             uint8_t a=INS_A(w),b=INS_B(w);
             Value key = ck->constants[INS_IMM40(w)];
-            if (!val_is_map(REGS[b])) throw std::runtime_error("field assign on non-map");
+            if (!val_is_map(REGS[b])) raise("E0110", "field assign on non-map", ck, pc);
             ObjMap& m = as_map(REGS[b]);
             if (!m.str_idx && !m.int_flat) {
                 // Small map: monomorphic inline cache (fast update of existing key)
@@ -958,7 +1106,7 @@ Value VM::run_frame(CallFrame& outer_frame)
                     break;
                 }
             }
-            throw std::runtime_error("cannot integer-index this type");
+            raise("E0111", "cannot integer-index this type", ck, pc);
         }
         case Op::SETI: {
             uint8_t a=INS_A(w),b=INS_B(w);
@@ -968,13 +1116,13 @@ Value VM::run_frame(CallFrame& outer_frame)
                 if (idx < 0) idx += int64_t(v.size());
                 v.at(idx) = REGS[b];
             } else {
-                throw std::runtime_error("cannot integer-index assign this type");
+                raise("E0112", "cannot integer-index assign this type", ck, pc);
             }
             break;
         }
         case Op::APPEND: {
             uint8_t a=INS_A(w),b=INS_B(w);
-            if (!val_is_list(REGS[a])) throw std::runtime_error("append on non-list");
+            if (!val_is_list(REGS[a])) raise("E0113", "append on non-list", ck, pc);
             as_list(REGS[a]).items.push_back(REGS[b]);
             break;
         }
@@ -988,14 +1136,14 @@ Value VM::run_frame(CallFrame& outer_frame)
                     if (val_eq(x, REGS[c])) { found=true; break; }
                 REGS[a] = Value::from_bool(found);
             } else {
-                throw std::runtime_error("'in' on non-collection");
+                raise("E0114", "'in' on non-collection", ck, pc);
             }
             break;
         }
         case Op::MAP_SETK: {
             uint8_t a=INS_A(w),b=INS_B(w);
             Value key = ck->constants[INS_IMM48(w)];
-            if (!val_is_map(REGS[a])) throw std::runtime_error("map assign on non-map");
+            if (!val_is_map(REGS[a])) raise("E0115", "map assign on non-map", ck, pc);
             as_map(REGS[a]).set(key, REGS[b]);
             break;
         }
@@ -1082,12 +1230,13 @@ Value VM::run_frame(CallFrame& outer_frame)
         case Op::CALL: {
             uint8_t a = INS_A(w), nargs = INS_B(w), nret = INS_C(w);
             Value callee_v = REGS[a];
-            if (!callee_v.is_ptr()) throw std::runtime_error("cannot call non-function");
+            if (!callee_v.is_ptr()) raise("E0100", "cannot call non-function", ck, pc);
             Obj* co = callee_v.as_ptr();
 
             if (co->kind == ObjKind::Native) {
                 Value r = static_cast<ObjNative*>(co)->fn(nargs, &REGS[a+1]);
                 if (nret > 0) REGS[a] = r;
+                GC_CHECK();  // native ran arbitrary C++ alloc without a dispatch-loop safepoint
                 break;
             }
 
@@ -1109,12 +1258,14 @@ Value VM::run_frame(CallFrame& outer_frame)
                         Value r = je->closure_fn(nargs, &REGS[a + 1],
                                                   reinterpret_cast<void**>(cl->upvalues.data()));
                         if (nret > 0) REGS[a] = r;
+                        GC_CHECK();  // JIT'd code allocates without a dispatch-loop safepoint
                         break;
                     }
                     if (je->value_fn) {
                         // Generic value JIT: handles any arg types natively.
                         Value r = je->value_fn(nargs, &REGS[a + 1]);
                         if (nret > 0) REGS[a] = r;
+                        GC_CHECK();
                         break;
                     }
                     if (je->int_fn) {
@@ -1124,6 +1275,7 @@ Value VM::run_frame(CallFrame& outer_frame)
                         if (ok) {
                             int64_t r = je->int_fn(nargs, &REGS[a + 1]);
                             if (nret > 0) REGS[a] = Value::from_int(r);
+                            GC_CHECK();
                             break;
                         }
                     }
@@ -1134,6 +1286,7 @@ Value VM::run_frame(CallFrame& outer_frame)
                         if (ok) {
                             double r = je->float_fn(nargs, &REGS[a + 1]);
                             if (nret > 0) REGS[a] = Value::from_float(r);
+                            GC_CHECK();
                             break;
                         }
                     }
@@ -1141,11 +1294,11 @@ Value VM::run_frame(CallFrame& outer_frame)
             } else if (co->kind == ObjKind::Function) {
                 cl = alloc<ObjClosure>(static_cast<ObjFunction*>(co));
             } else {
-                throw std::runtime_error("not callable");
+                raise("E0101", "not callable", ck, pc);
             }
 
             if (m_frame_count >= MAX_FRAMES)
-                throw std::runtime_error("stack overflow");
+                raise("E0102", "stack overflow", ck, pc);
 
             frame->pc = pc;  // save caller's next-instruction pointer
 
@@ -1157,6 +1310,8 @@ Value VM::run_frame(CallFrame& outer_frame)
             nf.pc      = cl->fn->chunk->code.data();
             nf.regs    = new_regs;
             nf.base    = int(new_regs - m_stack);
+            ensure_stack_window(nf.base);
+            fixup_args(cl->fn, nargs, new_regs);
 
             frame = &nf;
             pc    = nf.pc;
@@ -1167,16 +1322,19 @@ Value VM::run_frame(CallFrame& outer_frame)
         case Op::CALL_0: {
             uint8_t a=INS_A(w),b=INS_B(w);
             REGS[a] = call_value(REGS[b], 0, &REGS[b+1]);
+            GC_CHECK();
             break;
         }
         case Op::CALL_1: {
             uint8_t a=INS_A(w),b=INS_B(w),c=INS_C(w);
             REGS[a] = call_value(REGS[b], 1, &REGS[c]);
+            GC_CHECK();
             break;
         }
         case Op::CALL_N: {
             uint8_t a=INS_A(w), n=INS_B(w);
             call_value(REGS[a], n, &REGS[a+1]);
+            GC_CHECK();
             break;
         }
         case Op::INVOKE: {
@@ -1189,12 +1347,14 @@ Value VM::run_frame(CallFrame& outer_frame)
             } else {
                 REGS[a] = invoke_method(REGS[a], MethodId(key), int(nargs), &REGS[a + 1]);
             }
+            GC_CHECK();  // method call may run a native/user fn that allocates
             break;
         }
 
         case Op::RETURN_0: {
             close_upvalues(regs);
             --m_frame_count;
+            drop_stale_try_handlers();
             if (m_frame_count < entry_depth) return Value::none_val();
             regs[-1] = Value::none_val();
             frame = &m_frames[m_frame_count - 1];
@@ -1206,6 +1366,7 @@ Value VM::run_frame(CallFrame& outer_frame)
             Value ret = REGS[a];
             close_upvalues(regs);
             --m_frame_count;
+            drop_stale_try_handlers();
             if (m_frame_count < entry_depth) return ret;
             regs[-1] = ret;
             frame = &m_frames[m_frame_count - 1];
@@ -1217,6 +1378,7 @@ Value VM::run_frame(CallFrame& outer_frame)
             Value ret = REGS[b];
             close_upvalues(regs);
             --m_frame_count;
+            drop_stale_try_handlers();
             if (m_frame_count < entry_depth) return ret;
             regs[-1] = ret;
             frame = &m_frames[m_frame_count - 1];
@@ -1239,18 +1401,35 @@ Value VM::run_frame(CallFrame& outer_frame)
                 try { REGS[a] = Value::from_int(std::stoll(as_str(v).data)); break; }
                 catch (...) {}
             }
-            throw std::runtime_error("cannot convert to int");
+            raise("E0116", "cannot convert to int", ck, pc);
         }
         case Op::TO_FLOAT: {
             uint8_t a=INS_A(w),b=INS_B(w);
             Value v = REGS[b];
             if (v.is_float()) { REGS[a] = v; break; }
             if (v.is_int())   { REGS[a] = Value::from_float(double(v.as_int())); break; }
-            throw std::runtime_error("cannot convert to float");
+            raise("E0117", "cannot convert to float", ck, pc);
         }
         case Op::TO_BOOL: {
             uint8_t a=INS_A(w),b=INS_B(w);
             REGS[a] = Value::from_bool(REGS[b].truthy());
+            break;
+        }
+        case Op::IS_TYPE: {
+            uint8_t a=INS_A(w),b=INS_B(w),c=INS_C(w);
+            Value v = REGS[b];
+            bool r = false;
+            switch (TypeCode(c)) {
+            case TypeCode::Int:    r = v.is_int(); break;
+            case TypeCode::Float:  r = v.is_float(); break;
+            case TypeCode::String: r = val_is_string(v); break;
+            case TypeCode::Bool:   r = v.is_bool(); break;
+            case TypeCode::List:   r = val_is_list(v); break;
+            case TypeCode::Map:    r = val_is_map(v); break;
+            case TypeCode::Tuple:  r = v.is_ptr() && v.as_ptr()->kind == ObjKind::Tuple; break;
+            case TypeCode::None:   r = v.is_none(); break;
+            }
+            REGS[a] = Value::from_bool(r);
             break;
         }
         case Op::TYPEOF: {
@@ -1274,13 +1453,30 @@ Value VM::run_frame(CallFrame& outer_frame)
             break;
         }
 
-        // ── Error handling (minimal — rethrow as C++ exception for now) ──────
+        // ── Error handling ────────────────────────────────────────────────────
         case Op::THROW: {
             uint8_t a = INS_A(w);
-            throw std::runtime_error(val_to_string(REGS[a]));
+            raise_value(REGS[a], ck, pc);
         }
-        case Op::TRY_PUSH: case Op::TRY_POP: case Op::ERR_NEW:
-            // ponytail: try/catch → TODO; just no-op for benchmarks
+        case Op::TRY_PUSH: {
+            // A = register the caught value lands in; imm40 = signed offset
+            // (from this instruction's already-advanced pc) to the catch
+            // dispatcher's first instruction.
+            uint8_t reg = INS_A(w);
+            int64_t off = INS_IMM40(w);
+            m_try_handlers.push_back({m_frame_count, pc + off, ck, int(reg)});
+            break;
+        }
+        case Op::TRY_POP:
+            // Reached only on normal (non-exceptional) completion of the try
+            // body — the handler installed by the matching TRY_PUSH is no
+            // longer needed.
+            if (!m_try_handlers.empty()) m_try_handlers.pop_back();
+            break;
+        case Op::ERR_NEW:
+            // ponytail: unused — raise()/raise_value() already build the
+            // ObjError catch payload directly; no separate construction op
+            // is needed for the current try/catch design.
             break;
 
         case Op::NOP: break;
@@ -1292,12 +1488,33 @@ Value VM::run_frame(CallFrame& outer_frame)
         }
 
         default:
-            throw std::runtime_error("unknown opcode");
+            raise("E0199", "unknown opcode", ck, pc);
         }
+    }
+    } catch (RuntimeError& e) {
+        // Handle only if the matching handler belongs to a frame this
+        // invocation owns (its own frame, or one pushed via the
+        // non-recursive CALL opcode's in-place frame-switching) — otherwise
+        // it belongs to an outer, already-suspended run_frame() invocation
+        // (reached only via call_value()'s C++ recursion for native/JIT
+        // bridge calls), so re-throw and let that invocation's own catch
+        // here handle it instead.
+        if (m_try_handlers.empty() || m_try_handlers.back().frame_idx < entry_depth)
+            throw;
+        TryHandler h = m_try_handlers.back();
+        m_try_handlers.pop_back();
+        m_frame_count = h.frame_idx;
+        frame = &m_frames[m_frame_count - 1];
+        pc    = h.catch_pc;
+        regs  = frame->regs;
+        ck    = h.catch_chunk;
+        regs[h.catch_reg] = e.payload();
+    }
     }
 
 #undef NEXT_INS
 #undef REGS
+#undef GC_CHECK
 }
 
 Value VM::run(ObjFunction* fn)

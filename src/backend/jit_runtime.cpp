@@ -98,6 +98,31 @@ uint64_t syn_rt_len(uint64_t obj_) {
 
 uint64_t syn_rt_map_new() { return R(Value::from_ptr(tls_vm->alloc_map())); }
 
+// Generic obj.method(args) dispatch — routes through the same
+// VM::invoke_method() the bytecode interpreter's INVOKE opcode uses, so
+// every list/string/map method (split, join, upper, find, starts_with, ...)
+// has exactly one implementation instead of a JIT-side reimplementation of
+// each. `mid` is a MethodId cast to int by the generated code (jit.cpp
+// already validated the field name resolves to a known MethodId before
+// emitting this call).
+uint64_t syn_rt_invoke_method(uint64_t obj, int mid, int nargs, const uint64_t* args) {
+    return R(tls_vm->invoke_method(V(obj), MethodId(mid), nargs, (Value*)args));
+}
+
+// `key in container` — mirrors the interpreter's HAS_KEY opcode exactly
+// (map: key lookup; list/tuple: linear equality scan).
+uint64_t syn_rt_has_key(uint64_t container_, uint64_t key_) {
+    Value container = V(container_), key = V(key_);
+    if (val_is_map(container))
+        return R(Value::from_bool(!as_map(container).get(key).is_none()));
+    if (container.is_ptr() && uint8_t(container.as_ptr()->kind) - 1u <= 1u) {
+        for (auto& x : static_cast<ObjList*>(container.as_ptr())->items)
+            if (val_eq(x, key)) return R(Value::from_bool(true));
+        return R(Value::from_bool(false));
+    }
+    return R(Value::from_bool(false));  // non-collection: JIT tier can't raise; caller falls back
+}
+
 // obj[key]: list/tuple (int key) or map (any key)
 uint64_t syn_rt_index(uint64_t obj_, uint64_t key_) {
     Value obj = V(obj_), key = V(key_);

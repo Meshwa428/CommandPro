@@ -139,7 +139,12 @@ Expr Parser::str_lit(Span span, std::string s)
 {
     auto n = std::make_unique<StringLitExpr>();
     n->span = span;
-    n->raw  = std::move(s);
+    // Compiler::unescape() assumes raw includes the surrounding quotes (true
+    // for real string tokens from the lexer) and strips them unconditionally
+    // — wrap synthetic literals in quotes so that holds here too. Safe for
+    // every current caller (command-desugared button/key/direction names and
+    // bareword map-literal keys) since none contain '"' or '\\'.
+    n->raw  = "\"" + std::move(s) + "\"";
     return n;
 }
 
@@ -186,6 +191,13 @@ Stmt Parser::error_stmt(Span span, std::string msg)
 Expr Parser::error_expr(Span span, std::string msg)
 {
     m_diag.error(m_source.location_of(span.start), std::move(msg));
+    // Guarantee forward progress: this is parse_primary()'s fallback for a
+    // token that starts no valid expression (e.g. a reserved keyword like
+    // `middle` used where an identifier is expected). Without consuming it,
+    // the caller's statement/expression loop re-parses the exact same token
+    // forever, appending an identical diagnostic each time until the
+    // diagnostics vector exhausts memory (std::bad_alloc, not a clean error).
+    if (!check(TokenKind::Eof)) advance();
     auto n = std::make_unique<NoneLitExpr>();
     n->span = span;
     return n;
@@ -1503,7 +1515,8 @@ Expr Parser::parse_primary()
                     cf.iter2 = std::string(expect(TokenKind::Ident, "expected variable").text(m_source));
                 }
                 expect(TokenKind::In, "expected 'in'");
-                cf.source = parse_expr();
+                // pipe level, not full expr: 'if' here is the comp filter, not a ternary
+                cf.source = parse_pipe();
                 comp->comp_fors.push_back(std::move(cf));
                 skip_newlines();
             }
@@ -1537,13 +1550,18 @@ Expr Parser::parse_primary()
         }
         // Parse first key
         Expr first_key;
+        std::string bare_key;   // set when key was a bare ident
+        Span        bare_key_span{};
         if (check(TokenKind::Ident)) {
-            // bare ident key → string literal
-            auto s = std::make_unique<StringLitExpr>();
-            s->span = peek().span;
-            s->raw  = std::string(peek().text(m_source));
+            // bare ident key → string literal (str_lit adds the quotes that
+            // Compiler::unescape() strips; a raw ident text would otherwise
+            // lose its first+last char, e.g. "id" → "")
+            Span ksp = peek().span;
+            std::string kname(peek().text(m_source));
             advance();
-            first_key = std::move(s);
+            bare_key = kname;
+            bare_key_span = ksp;
+            first_key = str_lit(ksp, std::move(kname));
         } else {
             first_key = parse_expr();
         }
@@ -1556,7 +1574,16 @@ Expr Parser::parse_primary()
             // map comprehension
             auto comp = std::make_unique<MapCompExpr>();
             comp->span  = sp;
-            comp->key   = std::move(first_key);
+            // {k: v for k, v in m} — a bare ident key is the loop VARIABLE
+            // here, not a string key like in map literals
+            if (!bare_key.empty()) {
+                auto id  = std::make_unique<IdentExpr>();
+                id->span = bare_key_span;
+                id->name = bare_key;
+                comp->key = std::move(id);
+            } else {
+                comp->key = std::move(first_key);
+            }
             comp->value = std::move(first_val);
             advance(); // consume 'for'
             comp->comp_for.span  = peek().span;
@@ -1565,7 +1592,8 @@ Expr Parser::parse_primary()
                 comp->comp_for.iter2 = std::string(expect(TokenKind::Ident, "expected variable").text(m_source));
             }
             expect(TokenKind::In, "expected 'in'");
-            comp->comp_for.source = parse_expr();
+            // pipe level, not full expr: 'if' here is the comp filter, not a ternary
+            comp->comp_for.source = parse_pipe();
             skip_newlines();
             if (match(TokenKind::If)) {
                 comp->filter = parse_expr();
@@ -1584,9 +1612,9 @@ Expr Parser::parse_primary()
             if (check(TokenKind::RBrace)) break;
             Expr key;
             if (check(TokenKind::Ident)) {
-                auto s = std::make_unique<StringLitExpr>();
-                s->span = peek().span; s->raw = std::string(peek().text(m_source));
-                advance(); key = std::move(s);
+                Span ksp = peek().span;
+                std::string kname(peek().text(m_source));
+                advance(); key = str_lit(ksp, std::move(kname));
             } else {
                 key = parse_expr();
             }

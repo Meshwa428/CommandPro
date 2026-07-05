@@ -1,0 +1,11 @@
+# test: automation/window
+focus "Notepad"
+# expect-platform: WindowFocus(Notepad)
+move "Notepad", 100, 100
+# expect-platform: WindowMove(Notepad, 100, 100)
+resize "Notepad", 800, 600
+# expect-platform: WindowResize(Notepad, 800, 600)
+maximize "Notepad"
+# expect-platform: WindowMaximize(Notepad)
+minimize "Notepad"
+# expect-platform: WindowMinimize(Notepad)

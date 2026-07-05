@@ -1,3 +1,4 @@
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -5,6 +6,12 @@
 #include <sstream>
 #include <string>
 #include <unordered_set>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#include <unistd.h>
+#endif
 
 #include "synapse/frontend/ast.h"
 #include "synapse/frontend/lexer.h"
@@ -13,6 +20,10 @@
 #include "synapse/runtime/vm.h"
 #include "synapse/runtime/value.h"
 #include "synapse/backend/jit.h"
+#include "synapse/common/diag.h"
+#include "synapse/runtime/automation_stdlib.h"
+#include "synapse/platform/platform.h"
+#include "platform/mock/mock_platform.h"
 
 extern "C" void syn_rt_drain_jit_pool();
 
@@ -88,6 +99,40 @@ static void register_stdlib(syn::VM& vm)
         for (int64_t i = start; step > 0 ? i < stop : i > stop; i += step)
             list->items.push_back(syn::Value::from_int(i));
         return syn::Value::from_ptr(list);
+    });
+
+    // xs[a to b] compiles to __slice(xs, a, b). End-exclusive, negative indices
+    // count from the back, none bounds default to 0 / len.
+    vm.define_native("__slice", [&vm](int argc, syn::Value* args) -> syn::Value {
+        if (argc < 3) return syn::Value::none_val();
+        syn::Value obj = args[0];
+        bool is_seq = obj.is_ptr() && (obj.as_ptr()->kind == syn::ObjKind::List ||
+                                       obj.as_ptr()->kind == syn::ObjKind::Tuple);
+        int64_t n;
+        if (syn::val_is_string(obj)) n = int64_t(syn::as_str(obj).data.size());
+        else if (is_seq)             n = int64_t(static_cast<syn::ObjList*>(obj.as_ptr())->items.size());
+        else return syn::Value::none_val();
+
+        auto bound = [n](syn::Value v, int64_t dflt) {
+            if (!v.is_int()) return dflt;
+            int64_t i = v.as_int();
+            if (i < 0) i += n;
+            if (i < 0) i = 0;
+            if (i > n) i = n;
+            return i;
+        };
+        int64_t lo = bound(args[1], 0), hi = bound(args[2], n);
+        if (hi < lo) hi = lo;
+
+        if (syn::val_is_string(obj)) {
+            const std::string& s = syn::as_str(obj).data;
+            return syn::Value::from_ptr(vm.alloc_string(s.data() + lo, std::size_t(hi - lo)));
+        }
+        auto& items = static_cast<syn::ObjList*>(obj.as_ptr())->items;
+        auto* out = vm.alloc_list();
+        out->kind = obj.as_ptr()->kind;  // tuple slice stays a tuple
+        out->items.assign(items.begin() + lo, items.begin() + hi);
+        return syn::Value::from_ptr(out);
     });
 
     vm.define_native("abs", [](int argc, syn::Value* args) -> syn::Value {
@@ -265,6 +310,100 @@ static void register_stdlib(syn::VM& vm)
     });
 }
 
+// Directory containing the running `syn` binary — the sibling
+// syn_linux_platform.so, if built, lives right next to it.
+static std::string exe_dir()
+{
+#ifdef _WIN32
+    char buf[MAX_PATH];
+    DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return ".";
+    std::string path(buf, n);
+    auto pos = path.find_last_of("\\/");
+    return pos == std::string::npos ? "." : path.substr(0, pos);
+#else
+    char buf[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return ".";
+    buf[n] = '\0';
+    std::string path(buf);
+    auto pos = path.find_last_of('/');
+    return pos == std::string::npos ? "." : path.substr(0, pos);
+#endif
+}
+
+// Picks the automation backend: MockPlatform under tests/run.py
+// (SYN_MOCK_PLATFORM=1) or when this build has no real backend, otherwise
+// the real Linux (X11/XTest) backend — dlopen'd on demand from the sibling
+// syn_linux_platform.so plugin (see CMakeLists.txt for why it's a separate
+// plugin rather than linked directly: avoids paying X11/PNG's shared-library
+// load cost on every process that never touches automation).
+static syn::Platform* make_platform()
+{
+    if (!std::getenv("SYN_MOCK_PLATFORM")) {
+        using FactoryFn = syn::Platform* (*)();
+#ifdef _WIN32
+        std::string dll_path = exe_dir() + "\\syn_windows_platform.dll";
+        if (HMODULE handle = LoadLibraryA(dll_path.c_str())) {
+            if (auto* factory = reinterpret_cast<FactoryFn>(
+                    GetProcAddress(handle, "syn_create_windows_platform")))
+                return factory();
+        }
+#else
+        std::string so_path = exe_dir() + "/syn_linux_platform.so";
+        if (void* handle = dlopen(so_path.c_str(), RTLD_NOW | RTLD_LOCAL)) {
+            if (auto* factory = reinterpret_cast<FactoryFn>(dlsym(handle, "syn_create_linux_platform")))
+                return factory();
+        }
+#endif
+    }
+    static syn::MockPlatform platform;
+    return &platform;
+}
+
+// tests/run.py (automation goldens) sets SYN_DUMP_PLATFORM_LOG=1 to read back
+// what the mock backend recorded, one "PLATFORM: <call>" line per command.
+static void maybe_dump_platform_log(syn::Platform* platform)
+{
+    if (!std::getenv("SYN_DUMP_PLATFORM_LOG")) return;
+    if (auto* mock = dynamic_cast<syn::MockPlatform*>(platform))
+        for (auto& line : mock->log()) std::cout << "PLATFORM: " << line << "\n";
+}
+
+// Registering the automation stdlib allocates ~35 ObjNative closures across
+// 6 namespace maps, and (on Linux) the first real Platform call opens an X11
+// connection — real cost that showed up as a flat ~1ms/process tax on every
+// benchmark, including pure-compute scripts that never touch automation.
+// Skip it unless the script can actually reach mouse/keyboard/window/app/
+// screen/time, via either command-statement sugar (dedicated keyword tokens)
+// or a direct `mouse.move(...)`-style call (plain identifier).
+static bool script_uses_automation(const std::vector<syn::Token>& tokens, const syn::Source& source)
+{
+    using syn::TokenKind;
+    static const std::unordered_set<std::string> kNamespaceNames = {
+        "mouse", "keyboard", "window", "app", "screen", "time"
+    };
+    for (const auto& tok : tokens) {
+        switch (tok.kind) {
+        case TokenKind::Mouse: case TokenKind::Click: case TokenKind::Drag:
+        case TokenKind::Scroll: case TokenKind::Hold: case TokenKind::Release:
+        case TokenKind::Press: case TokenKind::Type: case TokenKind::Run:
+        case TokenKind::Open: case TokenKind::Close: case TokenKind::Focus:
+        case TokenKind::Move: case TokenKind::Resize: case TokenKind::Maximize:
+        case TokenKind::Minimize: case TokenKind::Capture: case TokenKind::Wait:
+        case TokenKind::Find: case TokenKind::See: case TokenKind::Tap:
+        case TokenKind::Check: case TokenKind::Uncheck: case TokenKind::Select:
+        case TokenKind::Read:
+            return true;
+        case TokenKind::Ident:
+            if (kNamespaceNames.count(std::string(tok.text(source)))) return true;
+            break;
+        default: break;
+        }
+    }
+    return false;
+}
+
 // ── Module loading ────────────────────────────────────────────────────────────
 
 static std::string dir_of(const std::string& path)
@@ -281,7 +420,11 @@ static std::string path_join(const std::string& dir, const std::string& name)
 static std::string abs_path(const std::string& p)
 {
     char buf[4096];
+#ifdef _WIN32
+    return _fullpath(buf, p.c_str(), sizeof(buf)) ? std::string(buf) : p;
+#else
     return realpath(p.c_str(), buf) ? std::string(buf) : p;
+#endif
 }
 
 static std::string read_file_str(const std::string& path)
@@ -294,31 +437,50 @@ static std::string read_file_str(const std::string& path)
 }
 
 // Resolve a UseEntry to an absolute file path; returns "" if not found.
+//
+// Directory packages: if `<rel>.syn` doesn't exist but `<rel>/` is a
+// directory, fall back to `<rel>/__init__.syn` (Python's `__init__.py`
+// convention). That file runs like any other module — its own `use`
+// statements resolve relative to its own directory, so it typically
+// `use`s its sibling files and re-exports whatever globals it needs;
+// there's no separate export-list syntax, a module's globals *are* its
+// public surface (see load_modules' aliased-import diffing).
 static std::string resolve_module(const syn::UseEntry& entry, const std::string& base_dir)
 {
     auto try_path = [](const std::string& p) -> std::string {
         std::ifstream f(p);
         return f ? p : "";
     };
+    auto try_path_or_package = [&](const std::string& dir, const std::string& rel) -> std::string {
+        if (auto r = try_path(path_join(dir, rel + ".syn")); !r.empty()) return r;
+        return try_path(path_join(dir, rel + "/__init__.syn"));
+    };
+    // Dot in the final path component only — a bare "." or ".." traversal
+    // segment earlier in a string-ref path (e.g. "../../fixtures/pkg") isn't
+    // a file extension and shouldn't block the directory-package fallback.
+    auto basename_has_dot = [](const std::string& p) {
+        auto slash = p.find_last_of('/');
+        std::string base = slash == std::string::npos ? p : p.substr(slash + 1);
+        return base.find('.') != std::string::npos;
+    };
 
     if (entry.is_str_ref) {
         // Strip surrounding quotes from raw token text
         std::string name = entry.module_str;
         if (name.size() >= 2 && name.front() == '"') name = name.substr(1, name.size() - 2);
-        if (name.find('.') == std::string::npos) name += ".syn";
-        return try_path(path_join(base_dir, name));
+        if (basename_has_dot(name)) return try_path(path_join(base_dir, name));
+        return try_path_or_package(base_dir, name);
     } else {
-        // Dotted ident: utils.io → utils/io.syn
+        // Dotted ident: utils.io → utils/io.syn (or utils/io/__init__.syn)
         std::string rel;
         for (size_t i = 0; i < entry.module_path.size(); ++i) {
             if (i) rel += "/";
             rel += entry.module_path[i];
         }
-        rel += ".syn";
         // 1. Relative to current file's dir
-        if (auto r = try_path(path_join(base_dir, rel)); !r.empty()) return r;
+        if (auto r = try_path_or_package(base_dir, rel); !r.empty()) return r;
         // 2. std/ subdir next to current file
-        if (auto r = try_path(path_join(base_dir + "/std", rel)); !r.empty()) return r;
+        if (auto r = try_path_or_package(base_dir + "/std", rel); !r.empty()) return r;
         return "";
     }
 }
@@ -393,6 +555,10 @@ static void run_in_vm(const std::string& path, const std::string& src,
     if (!fn || compile_diag.has_errors()) { compile_diag.print_all(source); std::exit(1); }
 
     try { vm.run(fn); }
+    catch (const syn::RuntimeError& err) {
+        syn::print_runtime_error(err, source);
+        std::exit(1);
+    }
     catch (const std::exception& ex) {
         std::cerr << "RuntimeError: " << ex.what() << '\n';
         std::exit(1);
@@ -422,6 +588,11 @@ static syn::Value run_source(const std::string& path, const std::string& src,
 
     syn::VM vm;
     register_stdlib(vm);
+    syn::Platform* platform = nullptr;
+    if (script_uses_automation(tokens, source)) {
+        platform = make_platform();
+        syn::register_automation_stdlib(vm, platform, syn::AutomationOptions{});
+    }
 
     // Load modules before compiling main file
     std::unordered_set<std::string> loaded;
@@ -458,12 +629,19 @@ static syn::Value run_source(const std::string& path, const std::string& src,
                 }
             }
             syn::tls_vm = &vm;
-            try { mit->second.main_fn(0, nullptr); } catch (const std::exception& ex) {
+            try { mit->second.main_fn(0, nullptr); }
+            catch (const syn::RuntimeError& err) {
+                syn::tls_vm = nullptr;
+                syn::print_runtime_error(err, source);
+                std::exit(1);
+            }
+            catch (const std::exception& ex) {
                 syn::tls_vm = nullptr;
                 std::cerr << "RuntimeError: " << ex.what() << '\n'; std::exit(1);
             }
             syn_rt_drain_jit_pool();
             syn::tls_vm = nullptr;
+            maybe_dump_platform_log(platform);
             return syn::Value::none_val();
         }
     }
@@ -474,7 +652,12 @@ static syn::Value run_source(const std::string& path, const std::string& src,
     }
 
     try {
-        return vm.run(fn);
+        syn::Value result = vm.run(fn);
+        maybe_dump_platform_log(platform);
+        return result;
+    } catch (const syn::RuntimeError& err) {
+        syn::print_runtime_error(err, source);
+        std::exit(1);
     } catch (const std::exception& ex) {
         std::cerr << "RuntimeError: " << ex.what() << '\n';
         std::exit(1);
@@ -496,6 +679,7 @@ static void repl()
     std::cout << "Synapse v0.2.0 — type 'exit' to quit\n";
     syn::VM vm;
     register_stdlib(vm);
+    syn::register_automation_stdlib(vm, make_platform(), syn::AutomationOptions{});
 
     std::string line;
     while (true) {
@@ -521,6 +705,8 @@ static void repl()
             syn::Value res = vm.run(fn);
             if (!res.is_none())
                 std::cout << syn::val_to_string(res) << '\n';
+        } catch (const syn::RuntimeError& err) {
+            syn::print_runtime_error(err, source);
         } catch (const std::exception& ex) {
             std::cerr << "RuntimeError: " << ex.what() << '\n';
         }

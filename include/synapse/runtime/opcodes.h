@@ -88,6 +88,8 @@ enum class Op : uint8_t {
     RANGE_STEP   = 0x73, // RJ:    R[A]+=R[A+2]; if R[A]>R[A+1]: pc+=off
     FOR_PREP     = 0x74, // R:     R[A]=iterator(R[B])
     FOR_STEP     = 0x75, // RJ:    R[A+1]=next(R[A]); if done: pc+=off
+    ITER_KEYS    = 0x76, // R:     R[A] = keys(R[B]): map→key list, list/tuple→[0..n-1]
+    ITER_SEQ     = 0x77, // R:     R[A] = map? keys(R[B]) : R[B]  (iteration source)
 
     // Functions (0x80–0x89)
     CLOSURE  = 0x80, // RI:   R[A] = Closure(K[imm])
@@ -103,6 +105,7 @@ enum class Op : uint8_t {
 
     // Type ops (0x90–0x9B)
     TYPEOF   = 0x90,
+    IS_TYPE  = 0x91, // R: R[A] = R[B] has type C (see TypeCode)
     TO_INT   = 0x98,
     TO_FLOAT = 0x99,
     TO_STR   = 0x9A,
@@ -121,6 +124,11 @@ enum class Op : uint8_t {
     NOP    = 0xFD,
     BREAKPT= 0xFE,
     HALT   = 0xFF,
+};
+
+// ── Type codes (IS_TYPE operand C) ────────────────────────────────────────────
+enum class TypeCode : uint8_t {
+    Int = 0, Float, String, Bool, List, Map, Tuple, None,
 };
 
 // ── Method IDs (resolved at compile time, stored in INVOKE key field) ────────

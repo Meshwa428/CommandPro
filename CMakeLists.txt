@@ -56,10 +56,55 @@ add_library(libsynapse STATIC
     src/runtime/vm.cpp
     src/compiler/compiler.cpp
     src/backend/jit.cpp
+    src/platform/mock/mock_platform.cpp
+    src/runtime/automation_stdlib.cpp
+    src/rat/rat_model.cpp
 )
+target_include_directories(libsynapse PRIVATE src/platform/mock)
 target_include_directories(libsynapse PUBLIC include)
 target_compile_features(libsynapse PUBLIC cxx_std_20)
-target_link_libraries(libsynapse PUBLIC dl)
+if(UNIX)
+    target_link_libraries(libsynapse PUBLIC dl)
+endif()
+
+# ── Linux platform backend (uinput/X11 real automation) ──────────────────────
+# X11-only for now (XTest for input, Xlib+EWMH for windows); Wayland/uinput and
+# Windows/macOS backends are future work (design 002 §7). MockPlatform above
+# always builds regardless of platform, so `syn` still builds everywhere.
+#
+# Built as a SEPARATE plugin (dlopen'd at runtime by main.cpp, only for
+# scripts that actually use automation — see script_uses_automation()), not
+# linked into libsynapse/syn directly: linking X11+Xtst+PNG into the main
+# binary pulls in 12 extra transitive .so's (libX11, libxcb, libpng16, ...)
+# that the dynamic linker loads on *every* process start regardless of
+# whether the script ever touches automation — measured as a real ~1ms/run
+# fixed cost across the whole benchmark suite. dlopen defers that cost to
+# only the processes that need it.
+if(UNIX AND NOT APPLE)
+    find_package(X11)
+    find_package(PNG)
+    if(X11_FOUND AND X11_Xtst_FOUND AND PNG_FOUND)
+        add_library(syn_linux_platform MODULE src/platform/linux/linux_platform.cpp)
+        target_include_directories(syn_linux_platform PRIVATE include)
+        target_compile_features(syn_linux_platform PRIVATE cxx_std_20)
+        target_link_libraries(syn_linux_platform PRIVATE ${X11_LIBRARIES} ${X11_Xtst_LIB} PNG::PNG)
+        set_target_properties(syn_linux_platform PROPERTIES PREFIX "")
+    endif()
+endif()
+
+# ── Windows platform backend (SendInput/EnumWindows/GDI+ automation) ─────────
+# Same plugin pattern as Linux: LoadLibrary'd at runtime by main.cpp only for
+# scripts that use automation. All deps (user32/gdi32/gdiplus/shell32) ship
+# with Windows. NOTE: the rest of the tree (JIT mmap, dlfcn in main.cpp) is
+# not Windows-ported yet — this target is the automation backend half of the
+# port, kept building-ready for the first Windows CI run.
+if(WIN32)
+    add_library(syn_windows_platform MODULE src/platform/windows/windows_platform.cpp)
+    target_include_directories(syn_windows_platform PRIVATE include)
+    target_compile_features(syn_windows_platform PRIVATE cxx_std_20)
+    target_link_libraries(syn_windows_platform PRIVATE user32 gdi32 gdiplus shell32)
+    set_target_properties(syn_windows_platform PROPERTIES PREFIX "")
+endif()
 
 # ── CLI executable ────────────────────────────────────────────────────────────
 # jit_runtime.cpp is compiled into the executable (not libsynapse) so its

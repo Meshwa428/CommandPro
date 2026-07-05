@@ -1,0 +1,7 @@
+# test: automation/scroll_hold_release
+scroll up 3
+# expect-platform: MouseScroll(up, 3)
+hold left
+# expect-platform: MouseHold(left)
+release left
+# expect-platform: MouseRelease(left)

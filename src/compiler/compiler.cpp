@@ -46,7 +46,8 @@ ObjFunction* Compiler::compile_program(const Program& prog)
 ObjFunction* Compiler::compile_function(const std::string& name, int arity,
                                         const std::vector<std::string>& param_names,
                                         const Block& body,
-                                        std::vector<UpvalueInfo>* out_upvalues)
+                                        std::vector<UpvalueInfo>* out_upvalues,
+                                        const std::vector<Param>* params)
 {
     auto* fn = m_vm.alloc<ObjFunction>();
     fn->name  = name;
@@ -69,6 +70,25 @@ ObjFunction* Compiler::compile_function(const std::string& name, int arity,
     }
 
     begin_scope();
+    if (params) {
+        for (std::size_t i = 0; i < params->size(); ++i) {
+            const Param& p = (*params)[i];
+            if (p.is_variadic) {
+                if (i + 1 != params->size())
+                    m_diag.error(m_source.location_of(p.span.start),
+                                 "variadic parameter must be last");
+                else
+                    fn->has_rest = true;
+            }
+            if (p.default_val) {
+                // Ceiling (Lua-style): an explicit `none` argument also takes
+                // the default — VM fills missing args with none.
+                std::size_t skip = emit_jump(enc_RJ(Op::JNNIL, uint8_t(i), 0));
+                compile_expr(p.default_val.get(), int(i));
+                patch_jump(skip);
+            }
+        }
+    }
     compile_block(body);
     end_scope();
     emit(enc_I(Op::RETURN_0, 0, 0));
@@ -77,6 +97,14 @@ ObjFunction* Compiler::compile_function(const std::string& name, int arity,
     if (out_upvalues) *out_upvalues = fs.upvalues;
     m_current = fs.enclosing;
     return fn;
+}
+
+// ── Diagnostics ───────────────────────────────────────────────────────────────
+
+void Compiler::unsupported(Span span, const std::string& what)
+{
+    m_diag.error(m_source.location_of(span.start),
+                 what + " is not implemented yet");
 }
 
 // ── Statement compilation ─────────────────────────────────────────────────────
@@ -89,6 +117,7 @@ void Compiler::compile_block(const Block& stmts)
 void Compiler::compile_stmt(const StmtNode* stmt)
 {
     if (!stmt) return;
+    m_current_line = m_source.location_of(stmt->span.start).line;
     if (auto* s = dynamic_cast<const LetStmt*>(stmt))        { compile_let(s); return; }
     if (auto* s = dynamic_cast<const ConstStmt*>(stmt))      { compile_const(s); return; }
     if (auto* s = dynamic_cast<const AssignStmt*>(stmt))     { compile_assign(s); return; }
@@ -104,12 +133,33 @@ void Compiler::compile_stmt(const StmtNode* stmt)
     if (auto* s = dynamic_cast<const TryStmt*>(stmt))        { compile_try(s); return; }
     if (auto* s = dynamic_cast<const ThrowStmt*>(stmt))      { compile_throw(s); return; }
     if (auto* s = dynamic_cast<const ExprStmt*>(stmt))       { compile_expr_stmt(s); return; }
-    // UseStmt, InScopeStmt: skip for core runtime
+    if (dynamic_cast<const UseStmt*>(stmt)) return; // handled by module loader before compile
+    unsupported(stmt->span, "this statement form");
 }
 
 void Compiler::compile_let(const LetStmt* stmt)
 {
     bool export_global = m_module_mode && m_current->enclosing == nullptr;
+    if (stmt->bind_kind == LetBindKind::MapDestruct) {
+        // Declare targets first so they sit contiguously below the rhs temp.
+        std::vector<int> slots;
+        for (auto& ent : stmt->map_entries)
+            slots.push_back(declare_local(ent.alias.empty() ? ent.key : ent.alias));
+        int rhs = alloc_reg();
+        compile_expr(stmt->values[0].get(), rhs);
+        for (std::size_t i = 0; i < stmt->map_entries.size(); ++i) {
+            emit(enc_RI(Op::GET_FIELDK, uint8_t(slots[i]), uint8_t(rhs),
+                        int64_t(add_str_const(stmt->map_entries[i].key))));
+            mark_initialized(slots[i]);
+            if (export_global)
+                emit(enc_I(Op::SET_GLOBAL, uint8_t(slots[i]),
+                           int64_t(add_str_const(stmt->map_entries[i].alias.empty()
+                                                 ? stmt->map_entries[i].key
+                                                 : stmt->map_entries[i].alias))));
+        }
+        free_reg(); // rhs
+        return;
+    }
     if (stmt->bind_kind == LetBindKind::Simple) {
         int slot = declare_local(stmt->names[0]);
         int src = -1;
@@ -123,17 +173,22 @@ void Compiler::compile_let(const LetStmt* stmt)
             emit(enc_I(Op::SET_GLOBAL, uint8_t(slot), int64_t(add_str_const(stmt->names[0]))));
     } else {
         // tuple/list destructuring
+        // Declare targets first: the rhs temp must live ABOVE the new locals,
+        // otherwise free_reg() afterwards drops reg_top into the last local's
+        // slot and the next declaration clobbers it.
+        int n = int(stmt->names.size());
+        std::vector<int> slots;
+        for (int i = 0; i < n; ++i)
+            slots.push_back(declare_local(stmt->names[i]));
         int rhs = alloc_reg();
         compile_expr(stmt->values[0].get(), rhs);
-        int n = int(stmt->names.size());
         for (int i = 0; i < n; ++i) {
-            int slot = declare_local(stmt->names[i]);
-            emit(enc_RI(Op::GETI, uint8_t(slot), uint8_t(rhs), int64_t(i)));
-            mark_initialized(slot);
+            emit(enc_RI(Op::GETI, uint8_t(slots[i]), uint8_t(rhs), int64_t(i)));
+            mark_initialized(slots[i]);
             if (export_global)
-                emit(enc_I(Op::SET_GLOBAL, uint8_t(slot), int64_t(add_str_const(stmt->names[i]))));
+                emit(enc_I(Op::SET_GLOBAL, uint8_t(slots[i]), int64_t(add_str_const(stmt->names[i]))));
         }
-        free_reg();
+        free_reg(); // rhs
     }
 }
 
@@ -369,9 +424,14 @@ void Compiler::compile_for(const ForStmt* stmt)
         end_scope();
         free_reg(3); // base, base+1, base+2
     } else {
-        // for x in iterable
-        int list_reg = alloc_reg(); // will hold the list
-        compile_expr(stmt->source.get(), list_reg);
+        // for x in iterable  /  for k, v in iterable
+        bool dual = !stmt->iter2.empty();
+        int src_reg = alloc_reg(); // original iterable (needed for dual v = src[k])
+        compile_expr(stmt->source.get(), src_reg);
+        int seq_reg = alloc_reg(); // what we index over
+        // single-bind: map iterates keys, list/tuple/string pass through
+        // dual-bind:   key list for maps, [0..n-1] for lists (enumerate)
+        emit(enc_R(dual ? Op::ITER_KEYS : Op::ITER_SEQ, uint8_t(seq_reg), uint8_t(src_reg)));
         int idx_reg  = alloc_reg(); // counter
         emit(enc_I(Op::LOAD_INT, uint8_t(idx_reg), 0));
 
@@ -381,16 +441,24 @@ void Compiler::compile_for(const ForStmt* stmt)
         int iter_slot = declare_local(stmt->iter1);
         emit(enc_I(Op::LOAD_NONE, uint8_t(iter_slot), 0));
         mark_initialized(iter_slot);
+        int iter2_slot = -1;
+        if (dual) {
+            iter2_slot = declare_local(stmt->iter2);
+            emit(enc_I(Op::LOAD_NONE, uint8_t(iter2_slot), 0));
+            mark_initialized(iter2_slot);
+        }
 
-        // FOR_STEP: R[idx]>=len(list) → jump out; else R[iter_slot]=list[idx]; idx++
         // ponytail: inline with STR_LEN + JGE
         int len_reg = alloc_reg();
-        emit(enc_R(Op::STR_LEN, uint8_t(len_reg), uint8_t(list_reg)));
+        emit(enc_R(Op::STR_LEN, uint8_t(len_reg), uint8_t(seq_reg)));
         std::size_t exit_jmp = emit_jump(enc_RRJ(Op::JGTE, uint8_t(idx_reg), uint8_t(len_reg), 0));
         free_reg(); // len_reg
 
         emit(enc_R(Op::GET_FIELD, uint8_t(iter_slot),
-                   uint8_t(list_reg), uint8_t(idx_reg)));
+                   uint8_t(seq_reg), uint8_t(idx_reg)));
+        if (dual)
+            emit(enc_R(Op::GET_FIELD, uint8_t(iter2_slot),
+                       uint8_t(src_reg), uint8_t(iter_slot)));
         emit(enc_RI(Op::ADDI, uint8_t(idx_reg), uint8_t(idx_reg), 1));
 
         m_loop_stack.push_back({});
@@ -406,7 +474,7 @@ void Compiler::compile_for(const ForStmt* stmt)
         auto& lp = m_loop_stack.back();
         patch_list(lp.breaks);
         m_loop_stack.pop_back();
-        free_reg(2); // list_reg, idx_reg
+        free_reg(3); // src_reg, seq_reg, idx_reg
     }
 }
 
@@ -457,7 +525,8 @@ void Compiler::compile_fn_decl(const FnDeclStmt* stmt)
 
     std::vector<UpvalueInfo> inner_upvalues;
     ObjFunction* fn = compile_function(stmt->name, int(stmt->params.size()),
-                                       param_names, stmt->body, &inner_upvalues);
+                                       param_names, stmt->body, &inner_upvalues,
+                                       &stmt->params);
 
     uint16_t ki = add_const(Value::from_ptr(fn));
     emit(enc_RI(Op::CLOSURE, uint8_t(dest), 0, int64_t(ki)));
@@ -471,10 +540,93 @@ void Compiler::compile_fn_decl(const FnDeclStmt* stmt)
         emit(enc_I(Op::SET_GLOBAL, uint8_t(dest), int64_t(add_str_const(stmt->name))));
 }
 
+// try_stmt ::= 'try' block { catch_clause } [ else_clause ] [ finally_clause ]
+// catch_clause ::= 'catch' IDENT [ 'if' expr ] block   (checked top to bottom)
+//
+// Bytecode shape:
+//   TRY_PUSH catch_reg, ->dispatcher   ; register handler
+//   <body>
+//   TRY_POP                            ; normal completion: drop handler
+//   <else>                             ; only runs if body didn't throw
+//   JUMP ->shared_finally               ; success path shares finally with...
+// dispatcher:                          ; ...VM lands here on exception, catch_reg bound
+//   MOVE name_slot, catch_reg; [guard: JF ->next]; <catch body>; JUMP ->shared_finally
+//   ... one block per catch clause ...
+//   <finally>                          ; duplicated: no clause matched, must
+//   THROW catch_reg                    ; still run finally before propagating
+// shared_finally:
+//   <finally>                          ; single copy — success or caught-and-handled
+//
+// Known limitation: `return`/`break`/`continue` executed directly inside the
+// try/catch body jump out without running this finally (they don't emit the
+// TRY_POP a normal fallthrough would) — same class of gap as most first-cut
+// finally implementations; RETURN's frame-pop does clean up the handler
+// stack (see vm.cpp) so this can't misfire on a *later, unrelated* throw, it
+// just silently skips finally for that one escape path.
 void Compiler::compile_try(const TryStmt* stmt)
 {
-    // ponytail: emit body only; try/catch plumbing TODO after benchmarks work
+    int catch_reg = alloc_reg();
+    std::size_t try_push_idx = emit_jump(enc_RJ(Op::TRY_PUSH, uint8_t(catch_reg), 0));
+
+    begin_scope();
     compile_block(stmt->body);
+    end_scope();
+
+    emit(enc_I(Op::TRY_POP, 0, 0));
+
+    if (!stmt->else_body.empty()) {
+        begin_scope();
+        compile_block(stmt->else_body);
+        end_scope();
+    }
+
+    // Success path and every catch body share this single finally copy.
+    PatchList to_shared_finally;
+    to_shared_finally.jumps.push_back(emit_jump(enc_J(Op::JUMP, 0)));
+
+    // Catch dispatcher: VM jumps here on exception with catch_reg already bound.
+    patch_jump(try_push_idx);
+
+    for (auto& cc : stmt->catches) {
+        begin_scope();
+        int name_slot = declare_local(cc.name);
+        mark_initialized(name_slot);
+        emit(enc_R(Op::MOVE, uint8_t(name_slot), uint8_t(catch_reg)));
+
+        bool has_guard = bool(cc.guard);
+        std::size_t guard_jf = 0;
+        if (has_guard) {
+            int g = alloc_reg();
+            compile_expr(cc.guard.get(), g);
+            guard_jf = emit_jump(enc_RJ(Op::JF, uint8_t(g), 0));
+            free_reg();
+        }
+
+        compile_block(cc.body);
+        to_shared_finally.jumps.push_back(emit_jump(enc_J(Op::JUMP, 0)));
+
+        if (has_guard) patch_jump(guard_jf);
+        end_scope();
+    }
+
+    // No catch clause matched (or none exist — plain try/finally): this
+    // can't reach the shared finally below (it's re-throwing, not falling
+    // through), so it gets its own copy — finally must still run before
+    // propagating further.
+    if (!stmt->finally_body.empty()) {
+        begin_scope();
+        compile_block(stmt->finally_body);
+        end_scope();
+    }
+    emit(enc_R(Op::THROW, uint8_t(catch_reg), 0));
+
+    patch_list(to_shared_finally);
+    if (!stmt->finally_body.empty()) {
+        begin_scope();
+        compile_block(stmt->finally_body);
+        end_scope();
+    }
+    free_reg();  // catch_reg
 }
 
 void Compiler::compile_throw(const ThrowStmt* stmt)
@@ -508,9 +660,12 @@ int Compiler::compile_expr(const ExprNode* expr, int dest)
     if (auto* e = dynamic_cast<const TernaryExpr*>(expr))       return compile_ternary(e, dest);
     if (auto* e = dynamic_cast<const CallExpr*>(expr))          return compile_call(e, dest);
     if (auto* e = dynamic_cast<const IndexExpr*>(expr))         return compile_index(e, dest);
+    if (auto* e = dynamic_cast<const SliceExpr*>(expr))         return compile_slice(e, dest);
     if (auto* e = dynamic_cast<const FieldExpr*>(expr))         return compile_field(e, dest);
     if (auto* e = dynamic_cast<const ListExpr*>(expr))          return compile_list(e, dest);
     if (auto* e = dynamic_cast<const MapExpr*>(expr))           return compile_map(e, dest);
+    if (auto* e = dynamic_cast<const ListCompExpr*>(expr))      return compile_list_comp(e, dest);
+    if (auto* e = dynamic_cast<const MapCompExpr*>(expr))       return compile_map_comp(e, dest);
     if (auto* e = dynamic_cast<const TupleExpr*>(expr))         return compile_tuple(e, dest);
     if (auto* e = dynamic_cast<const FnExpr*>(expr))            return compile_fn_expr(e, dest);
     if (auto* e = dynamic_cast<const MatchExpr*>(expr))         return compile_match_expr(e, dest);
@@ -569,7 +724,9 @@ int Compiler::compile_expr(const ExprNode* expr, int dest)
         free_reg(); // lhs
         return r;
     }
-    // fallback
+    // fail loud: parser accepts it, codegen doesn't — never emit silent none
+    unsupported(expr->span, "this expression form");
+    // still emit something so compilation continues and reports further errors
     int r = dest < 0 ? alloc_reg() : dest;
     emit(enc_I(Op::LOAD_NONE, uint8_t(r), 0));
     return r;
@@ -704,6 +861,8 @@ static bool expr_is_pure(const ExprNode* e)
 
 int Compiler::compile_binary(const BinaryExpr* e, int dest)
 {
+    if (e->op == TokenKind::Pipe) return compile_pipe(e, dest);
+
     // Short-circuit for 'and'/'or'
     if (e->op == TokenKind::And) {
         int r = dest < 0 ? alloc_reg() : dest;
@@ -763,10 +922,163 @@ int Compiler::compile_binary(const BinaryExpr* e, int dest)
     case TokenKind::In:
         emit(enc_R(Op::HAS_KEY, uint8_t(r), uint8_t(rhs), uint8_t(lhs))); return done(0);
     default:
+        unsupported(e->span, "this operator");
         emit(enc_I(Op::LOAD_NONE, uint8_t(r), 0)); return done(0);
     }
     emit(enc_R(op, uint8_t(r), uint8_t(lhs), uint8_t(rhs)));
     return done(0);
+}
+
+void Compiler::compile_comp_level(const std::vector<const CompFor*>& fors, std::size_t level,
+                                  const std::function<void()>& body)
+{
+    if (level == fors.size()) { body(); return; }
+    const CompFor& cf = *fors[level];
+    bool dual = !cf.iter2.empty();
+
+    int src_reg = alloc_reg();
+    compile_expr(cf.source.get(), src_reg);
+    int seq_reg = alloc_reg();
+    emit(enc_R(dual ? Op::ITER_KEYS : Op::ITER_SEQ, uint8_t(seq_reg), uint8_t(src_reg)));
+    int idx_reg = alloc_reg();
+    emit(enc_I(Op::LOAD_INT, uint8_t(idx_reg), 0));
+
+    std::size_t loop_start = chunk().current_offset();
+    begin_scope();
+    int it1 = declare_local(cf.iter1);
+    emit(enc_I(Op::LOAD_NONE, uint8_t(it1), 0));
+    mark_initialized(it1);
+    int it2 = -1;
+    if (dual) {
+        it2 = declare_local(cf.iter2);
+        emit(enc_I(Op::LOAD_NONE, uint8_t(it2), 0));
+        mark_initialized(it2);
+    }
+
+    int len_reg = alloc_reg();
+    emit(enc_R(Op::STR_LEN, uint8_t(len_reg), uint8_t(seq_reg)));
+    std::size_t exit_jmp = emit_jump(enc_RRJ(Op::JGTE, uint8_t(idx_reg), uint8_t(len_reg), 0));
+    free_reg(); // len_reg
+
+    emit(enc_R(Op::GET_FIELD, uint8_t(it1), uint8_t(seq_reg), uint8_t(idx_reg)));
+    if (dual)
+        emit(enc_R(Op::GET_FIELD, uint8_t(it2), uint8_t(src_reg), uint8_t(it1)));
+    emit(enc_RI(Op::ADDI, uint8_t(idx_reg), uint8_t(idx_reg), 1));
+
+    compile_comp_level(fors, level + 1, body);
+
+    end_scope();
+    int64_t back = int64_t(loop_start) - int64_t(chunk().current_offset()) - 1;
+    emit(enc_J(Op::JUMP, back));
+    patch_jump(exit_jmp);
+    free_reg(3); // src_reg, seq_reg, idx_reg
+}
+
+int Compiler::compile_list_comp(const ListCompExpr* e, int dest)
+{
+    int r = dest < 0 ? alloc_reg() : dest;
+    emit(enc_R(Op::NEW_LIST, uint8_t(r), 0, 0));
+
+    std::vector<const CompFor*> fors;
+    for (auto& cf : e->comp_fors) fors.push_back(&cf);
+
+    compile_comp_level(fors, 0, [&]() {
+        std::size_t skip = 0;
+        if (e->filter) {
+            int f = alloc_reg();
+            compile_expr(e->filter.get(), f);
+            skip = emit_jump(enc_RJ(Op::JF, uint8_t(f), 0));
+            free_reg();
+        }
+        int tmp = alloc_reg();
+        compile_expr(e->body.get(), tmp);
+        emit(enc_R(Op::APPEND, uint8_t(r), uint8_t(tmp)));
+        free_reg();
+        if (e->filter) patch_jump(skip);
+    });
+    return r;
+}
+
+int Compiler::compile_map_comp(const MapCompExpr* e, int dest)
+{
+    int r = dest < 0 ? alloc_reg() : dest;
+    emit(enc_R(Op::NEW_MAP, uint8_t(r), 0));
+
+    std::vector<const CompFor*> fors{&e->comp_for};
+
+    compile_comp_level(fors, 0, [&]() {
+        std::size_t skip = 0;
+        if (e->filter) {
+            int f = alloc_reg();
+            compile_expr(e->filter.get(), f);
+            skip = emit_jump(enc_RJ(Op::JF, uint8_t(f), 0));
+            free_reg();
+        }
+        int kr = alloc_reg();
+        compile_expr(e->key.get(), kr);
+        int vr = alloc_reg();
+        compile_expr(e->value.get(), vr);
+        emit(enc_R(Op::SET_FIELD, uint8_t(vr), uint8_t(r), uint8_t(kr)));
+        free_reg(2);
+        if (e->filter) patch_jump(skip);
+    });
+    return r;
+}
+
+// x |> f(a, b) → f(x, a, b);  x |> obj.m(a) → obj.m(x, a);  x |> f → f(x)
+int Compiler::compile_pipe(const BinaryExpr* e, int dest)
+{
+    const ExprNode* rhs = e->right.get();
+    auto* call = dynamic_cast<const CallExpr*>(rhs);
+
+    if (call) {
+        for (auto& arg : call->args)
+            if (!arg.name.empty())
+                unsupported(arg.span, "named argument in a pipe call");
+    }
+
+    // Method-call RHS: INVOKE with piped value as first arg
+    if (call) {
+        if (auto* field = dynamic_cast<const FieldExpr*>(call->callee.get())) {
+            int obj_reg = alloc_reg();
+            compile_expr(field->object.get(), obj_reg);
+            int nargs = 1;
+            alloc_reg();
+            compile_expr(e->left.get(), obj_reg + 1);
+            for (auto& arg : call->args) {
+                alloc_reg(); ++nargs;
+                compile_expr(arg.value.get(), obj_reg + nargs);
+            }
+            MethodId mid = resolve_method_id(field->field);
+            uint32_t key = (mid != MethodId::Unknown)
+                ? uint32_t(mid)
+                : (0x80000000u | uint32_t(add_str_const(field->field)));
+            emit(enc_CALL(Op::INVOKE, uint8_t(obj_reg), uint8_t(nargs), 0, key));
+            free_reg(nargs);
+            if (dest >= 0 && dest != obj_reg)
+                emit(enc_R(Op::MOVE, uint8_t(dest), uint8_t(obj_reg)));
+            free_reg();
+            return dest >= 0 ? dest : obj_reg;
+        }
+    }
+
+    int callee_reg = alloc_reg();
+    compile_expr(call ? call->callee.get() : rhs, callee_reg);
+    int nargs = 1;
+    alloc_reg();
+    compile_expr(e->left.get(), callee_reg + 1);
+    if (call) {
+        for (auto& arg : call->args) {
+            int ar = alloc_reg(); ++nargs;
+            compile_expr(arg.value.get(), ar);
+        }
+    }
+    emit(enc_CALL(Op::CALL, uint8_t(callee_reg), uint8_t(nargs), 1));
+    free_reg(nargs);
+    if (dest >= 0 && dest != callee_reg)
+        emit(enc_R(Op::MOVE, uint8_t(dest), uint8_t(callee_reg)));
+    free_reg();
+    return dest >= 0 ? dest : callee_reg;
 }
 
 int Compiler::compile_unary(const UnaryExpr* e, int dest)
@@ -900,6 +1212,25 @@ int Compiler::compile_index(const IndexExpr* e, int dest)
     return r;
 }
 
+// xs[a to b] → __slice(xs, a, b); omitted bounds passed as none
+int Compiler::compile_slice(const SliceExpr* e, int dest)
+{
+    int callee_reg = alloc_reg();
+    emit(enc_I(Op::GET_GLOBAL, uint8_t(callee_reg), int64_t(add_str_const("__slice"))));
+    int a0 = alloc_reg();
+    compile_expr(e->object.get(), a0);
+    int a1 = alloc_reg();
+    compile_expr(e->start.get(), a1);  // null expr → LOAD_NONE
+    int a2 = alloc_reg();
+    compile_expr(e->end_.get(), a2);
+    emit(enc_CALL(Op::CALL, uint8_t(callee_reg), 3, 1));
+    free_reg(3);
+    if (dest >= 0 && dest != callee_reg)
+        emit(enc_R(Op::MOVE, uint8_t(dest), uint8_t(callee_reg)));
+    free_reg();
+    return dest >= 0 ? dest : callee_reg;
+}
+
 int Compiler::compile_field(const FieldExpr* e, int dest)
 {
     int r = dest < 0 ? alloc_reg() : dest;
@@ -961,7 +1292,8 @@ int Compiler::compile_fn_expr(const FnExpr* e, int dest)
 
     std::vector<UpvalueInfo> inner_upvalues;
     ObjFunction* fn = compile_function("<fn>", int(e->params.size()),
-                                       param_names, e->body, &inner_upvalues);
+                                       param_names, e->body, &inner_upvalues,
+                                       &e->params);
 
     uint16_t ki = add_const(Value::from_ptr(fn));
     int r = dest < 0 ? alloc_reg() : dest;
@@ -971,6 +1303,83 @@ int Compiler::compile_fn_expr(const FnExpr* e, int dest)
     return r;
 }
 
+// Emit tests for pat against R[subj]. Mismatch jumps land in `fail`.
+// Captures declare locals — caller must wrap the arm in begin_scope/end_scope.
+void Compiler::compile_pattern_match(const Pattern& pat, int subj, PatchList& fail)
+{
+    switch (pat.kind) {
+    case PatternKind::Wildcard:
+        return;
+    case PatternKind::Capture: {
+        int slot = declare_local(pat.name);
+        emit(enc_R(Op::MOVE, uint8_t(slot), uint8_t(subj)));
+        mark_initialized(slot);
+        return;
+    }
+    case PatternKind::Literal: {
+        int pat_r = alloc_reg();
+        switch (pat.lit_kind) {
+        case TokenKind::Int:
+            emit(enc_I(Op::LOAD_INT, uint8_t(pat_r), pat.int_val)); break;
+        case TokenKind::Float:
+            emit(enc_RI(Op::LOAD_FLOAT, uint8_t(pat_r),
+                        uint8_t(add_const(Value::from_float(pat.float_val))), 0));
+            break;
+        case TokenKind::String: {
+            uint16_t ki = add_str_const(unescape(pat.str_val));
+            emit(enc_I(Op::LOAD_CONST, uint8_t(pat_r), int64_t(ki)));
+            break;
+        }
+        case TokenKind::True:  emit(enc_I(Op::LOAD_TRUE,  uint8_t(pat_r), 0)); break;
+        case TokenKind::False: emit(enc_I(Op::LOAD_FALSE, uint8_t(pat_r), 0)); break;
+        default:               emit(enc_I(Op::LOAD_NONE,  uint8_t(pat_r), 0)); break;
+        }
+        fail.jumps.push_back(emit_jump(enc_RRJ(Op::JNEQ, uint8_t(subj), uint8_t(pat_r), 0)));
+        free_reg();
+        return;
+    }
+    case PatternKind::TypeCheck: {
+        TypeCode tc;
+        switch (pat.type_kw) {
+        case TokenKind::KwInt:    tc = TypeCode::Int;    break;
+        case TokenKind::KwFloat:  tc = TypeCode::Float;  break;
+        case TokenKind::KwString: tc = TypeCode::String; break;
+        case TokenKind::KwBool:   tc = TypeCode::Bool;   break;
+        case TokenKind::KwList:   tc = TypeCode::List;   break;
+        case TokenKind::KwMap:    tc = TypeCode::Map;    break;
+        case TokenKind::KwTuple:  tc = TypeCode::Tuple;  break;
+        default:                  tc = TypeCode::None;   break;
+        }
+        int t = alloc_reg();
+        emit(enc_R(Op::IS_TYPE, uint8_t(t), uint8_t(subj), uint8_t(tc)));
+        fail.jumps.push_back(emit_jump(enc_RJ(Op::JF, uint8_t(t), 0)));
+        free_reg();
+        return;
+    }
+    case PatternKind::Tuple: {
+        int t = alloc_reg();
+        emit(enc_R(Op::IS_TYPE, uint8_t(t), uint8_t(subj), uint8_t(TypeCode::Tuple)));
+        fail.jumps.push_back(emit_jump(enc_RJ(Op::JF, uint8_t(t), 0)));
+        emit(enc_R(Op::STR_LEN, uint8_t(t), uint8_t(subj)));
+        int n = alloc_reg();
+        emit(enc_I(Op::LOAD_INT, uint8_t(n), int64_t(pat.children.size())));
+        fail.jumps.push_back(emit_jump(enc_RRJ(Op::JNEQ, uint8_t(t), uint8_t(n), 0)));
+        free_reg(2);
+        for (std::size_t i = 0; i < pat.children.size(); ++i) {
+            int elem = alloc_reg();
+            emit(enc_RI(Op::GETI, uint8_t(elem), uint8_t(subj), int64_t(i)));
+            compile_pattern_match(pat.children[i], elem, fail);
+            // A capture inside the child claimed a slot above elem — freeing
+            // elem would let the next alloc clobber that local. Leak elem
+            // instead; end_scope reclaims it with the arm's locals.
+            if (m_current->reg_top == elem + 1)
+                free_reg();
+        }
+        return;
+    }
+    }
+}
+
 int Compiler::compile_match_expr(const MatchExpr* e, int dest)
 {
     int subj = alloc_reg();
@@ -978,52 +1387,45 @@ int Compiler::compile_match_expr(const MatchExpr* e, int dest)
     int r = dest < 0 ? alloc_reg() : dest;
     emit(enc_I(Op::LOAD_NONE, uint8_t(r), 0));
 
+    // Compile a block whose last expression becomes the match value.
+    auto compile_arm_body = [&](const Block& body) {
+        for (std::size_t i = 0; i + 1 < body.size(); ++i)
+            compile_stmt(body[i].get());
+        if (!body.empty()) {
+            if (auto* es = dynamic_cast<const ExprStmt*>(body.back().get()))
+                compile_expr(es->expr.get(), r);
+            else
+                compile_stmt(body.back().get());
+        }
+    };
+
     PatchList end_jumps;
     for (auto& arm : e->arms) {
-        // ponytail: only literal/wildcard patterns supported for benchmarks
-        bool always_match = arm.pattern.kind == PatternKind::Wildcard;
-        std::size_t jf_idx = 0;
-        bool has_cond = false;
-
-        if (!always_match && arm.pattern.kind == PatternKind::Literal) {
-            int pat_r = alloc_reg();
-            switch (arm.pattern.lit_kind) {
-            case TokenKind::Int:
-                emit(enc_I(Op::LOAD_INT, uint8_t(pat_r), arm.pattern.int_val));
-                break;
-            case TokenKind::True:
-                emit(enc_I(Op::LOAD_TRUE, uint8_t(pat_r), 0));
-                break;
-            case TokenKind::False:
-                emit(enc_I(Op::LOAD_FALSE, uint8_t(pat_r), 0));
-                break;
-            default:
-                emit(enc_I(Op::LOAD_NONE, uint8_t(pat_r), 0));
-                break;
-            }
-            int cmp = alloc_reg();
-            emit(enc_R(Op::EQ, uint8_t(cmp), uint8_t(subj), uint8_t(pat_r)));
-            jf_idx = emit_jump(enc_RJ(Op::JF, uint8_t(cmp), 0));
-            free_reg(); free_reg();
-            has_cond = true;
-        }
-
         begin_scope();
-        if (arm.pattern.kind == PatternKind::Capture)
-            declare_local(arm.pattern.name);
-        compile_block(arm.body);
-        // result of last expr? For stmt-style match arms, r stays none
-        end_scope();
+        PatchList fail;
+        compile_pattern_match(arm.pattern, subj, fail);
+        if (arm.guard) {
+            int g = alloc_reg();
+            compile_expr(arm.guard.get(), g);
+            fail.jumps.push_back(emit_jump(enc_RJ(Op::JF, uint8_t(g), 0)));
+            free_reg();
+        }
+        compile_arm_body(arm.body);
         end_jumps.jumps.push_back(emit_jump(enc_J(Op::JUMP, 0)));
-        if (has_cond) patch_jump(jf_idx);
+        patch_list(fail);
+        end_scope();
     }
 
     if (!e->else_body.empty()) {
-        begin_scope(); compile_block(e->else_body); end_scope();
+        begin_scope();
+        compile_arm_body(e->else_body);
+        end_scope();
     }
 
     patch_list(end_jumps);
-    free_reg(); // subj
+    // free subj (and r when we allocated it — borrowed-temp convention,
+    // same as compile_call's dest = -1 path)
+    free_reg(dest < 0 ? 2 : 1);
     return r;
 }
 
@@ -1143,12 +1545,12 @@ Chunk& Compiler::chunk() { return *m_current->fn->chunk; }
 
 void Compiler::emit(uint64_t instr, uint32_t line)
 {
-    chunk().emit(instr, line);
+    chunk().emit(instr, line ? line : m_current_line);
 }
 
 std::size_t Compiler::emit_jump(uint64_t instr, uint32_t line)
 {
-    return chunk().emit(instr, line);
+    return chunk().emit(instr, line ? line : m_current_line);
 }
 
 void Compiler::patch_jump(std::size_t jmp_idx)
@@ -1220,6 +1622,7 @@ void Compiler::assign_to(const ExprNode* lval, int src_reg)
         free_reg();
         return;
     }
+    unsupported(lval->span, "assignment to this expression form");
 }
 
 } // namespace syn

@@ -52,6 +52,10 @@ void Chunk::patch_jump(std::size_t jump_idx)
     case Op::FOR_STEP:
         w = enc_RJ(op, a, offset);
         break;
+    case Op::TRY_PUSH:
+        // RJ format: A = register the caught value binds to, offset = catch dispatcher entry
+        w = enc_RJ(op, a, offset);
+        break;
     default:
         // Shouldn't happen
         break;

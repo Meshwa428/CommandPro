@@ -1,0 +1,6 @@
+# test: automation/click
+click
+# expect-platform: MouseClick(left)
+click right 200, 200
+# expect-platform: MouseMove(200, 200)
+# expect-platform: MouseClick(right)

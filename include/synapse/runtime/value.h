@@ -197,8 +197,9 @@ struct Chunk; // forward
 
 struct ObjFunction : Obj {
     std::string  name;
-    int          arity         = 0;
+    int          arity         = 0;     // total param slots (incl. rest param)
     int          upvalue_count = 0;
+    bool         has_rest      = false; // last param is *rest: extras packed into a list
     Chunk*       chunk         = nullptr;
     ObjFunction();
     ~ObjFunction();

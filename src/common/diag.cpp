@@ -63,4 +63,24 @@ void DiagEngine::print_all(const Source& src) const
     }
 }
 
+void print_runtime_error(const RuntimeError& err, const Source& src)
+{
+    std::ostream& os = std::cerr;
+
+    os << src.name() << ":" << err.line() << ": \033[1;31merror[" << err.code()
+       << "]:\033[0m " << err.what() << "\n";
+
+    if (err.line() > 0) {
+        std::string_view line = src.line_text(err.line());
+        os << " " << err.line() << " | " << line << "\n";
+        os << "   | \033[1;32m^\033[0m\n";
+    }
+
+    if (!err.trace().empty()) {
+        os << "stack trace:\n";
+        for (const auto& t : err.trace())
+            os << "  at " << t.fn_name << " (" << src.name() << ":" << t.line << ")\n";
+    }
+}
+
 } // namespace syn

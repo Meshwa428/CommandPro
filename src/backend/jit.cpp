@@ -5,6 +5,7 @@
 #include "synapse/backend/jit.h"
 #include "synapse/frontend/ast.h"
 #include "synapse/frontend/token.h"
+#include "synapse/runtime/opcodes.h"
 
 #include <dlfcn.h>
 #include <sys/stat.h>
@@ -152,7 +153,7 @@ static bool check_int_stmt(const StmtNode* s, VarSet& ivars, const VarSet& ifns,
         // for __main__: only allow print(int_args) or call to int fn
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if (id->name == "print") {
+                if ((id->name == "print" || id->name == "say")) {
                     for (auto& arg : ce->args)
                         if (!is_int_expr(arg.value.get(), ivars, ifns, ctx)) return false;
                     return true;
@@ -292,7 +293,7 @@ static bool check_float_stmt(const StmtNode* s, VarSet& fvars, const VarSet& ffn
         if (!for_main) return true;
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if (id->name == "print") {
+                if ((id->name == "print" || id->name == "say")) {
                     for (auto& arg : ce->args)
                         if (!is_float_expr(arg.value.get(), fvars, ffns)) return false;
                     return true;
@@ -487,7 +488,7 @@ static bool check_mixed_stmt(const StmtNode* s, VTMap& vt,
         if (!for_main) return true;
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if (id->name == "print") {
+                if ((id->name == "print" || id->name == "say")) {
                     for (auto& arg : ce->args)
                         if (!infer_type(arg.value.get(), vt, ifns, ffns)) return false;
                     return true;
@@ -678,7 +679,7 @@ static void emit_int_stmt(const StmtNode* s, std::ostream& o, const VarSet& ifns
     if (auto* n = dynamic_cast<const ExprStmt*>(s)) {
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if (id->name == "print") {
+                if ((id->name == "print" || id->name == "say")) {
                     bool first = true;
                     for (auto& arg : ce->args) {
                         if (!first) o << sp << "fputc(' ', stdout);\n";
@@ -843,7 +844,7 @@ static void emit_float_stmt(const StmtNode* s, std::ostream& o, const VarSet& ff
     if (auto* n = dynamic_cast<const ExprStmt*>(s)) {
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if (id->name == "print") {
+                if ((id->name == "print" || id->name == "say")) {
                     bool first = true;
                     for (auto& arg : ce->args) {
                         if (!first) o << sp << "fputc(' ', stdout);\n";
@@ -1153,7 +1154,7 @@ static void emit_mixed_stmt(const StmtNode* s, std::ostream& o, const VTMap& vt,
     if (auto* n = dynamic_cast<const ExprStmt*>(s)) {
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if (id->name == "print") {
+                if ((id->name == "print" || id->name == "say")) {
                     bool first = true;
                     for (auto& arg : ce->args) {
                         if (!first) o << sp << "fputc(' ', stdout);\n";
@@ -1795,7 +1796,7 @@ static bool check_list_stmt(const StmtNode* s, VTMap& vt, LVMap& lv,
         if (!for_main && !all_fns) return true;
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if (id->name == "print") {
+                if ((id->name == "print" || id->name == "say")) {
                     if (!for_main) return true;
                     for (auto& arg : ce->args) {
                         if (infer_type_l(arg.value.get(), vt, lv, ifns, ffns)) continue;
@@ -2156,7 +2157,7 @@ static void emit_list_stmt(const StmtNode* s, std::ostream& o, const VTMap& vt, 
     if (auto* n = dynamic_cast<const ExprStmt*>(s)) {
         if (auto* ce = dynamic_cast<const CallExpr*>(n->expr.get())) {
             if (auto* id = dynamic_cast<const IdentExpr*>(ce->callee.get())) {
-                if (id->name == "print") {
+                if ((id->name == "print" || id->name == "say")) {
                     bool first = true;
                     for (auto& arg : ce->args) {
                         if (!first) o << sp << "fputc(' ', stdout);\n";
@@ -2339,28 +2340,160 @@ static void collect_let_names(const Block& body, VarSet& out)
     }
 }
 
+// ── Upvalue-capture detection for top-level fns ──────────────────────────────
+//
+// __main__'s value-JIT tier calls named top-level fns it didn't itself compile
+// via syn_rt_get_global(name) — but main.cpp's global pre-registration (run
+// once before main_fn() executes) skips any fn with upvalue_count != 0, since
+// a proper closure binding only happens via the CLOSURE bytecode op, which
+// never runs when __main__ is JIT'd C code instead of bytecode. A fn that
+// references a top-level `let`/`const` (compiled as a local of the synthetic
+// <main> function, not a real VM global, since module_mode is off for plain
+// scripts) captures it as an upvalue — so get_global(name) finds nothing and
+// calling the "function" (really `none`) throws "cannot call non-function".
+// These checkers detect that case so vjit_call_ok can refuse to treat such a
+// fn as callable via the global-lookup fallback, forcing __main__ back to the
+// (correct) bytecode interpreter instead of crashing.
+//
+// Mirrors vjit_expr_ok/vjit_stmt_ok's own construct whitelist: any expression
+// or statement kind not handled here is also one vjit itself doesn't accept,
+// so the whole eligibility check fails independently — no need for an
+// "unknown construct" fallback case.
+static bool block_refs_outer(const Block& body, const VarSet& outer, VarSet shadow);
+
+static bool expr_refs_outer(const ExprNode* e, const VarSet& outer, const VarSet& shadow)
+{
+    if (!e) return false;
+    if (auto* id = dynamic_cast<const IdentExpr*>(e))
+        return outer.count(id->name) > 0 && !shadow.count(id->name);
+    if (auto* u = dynamic_cast<const UnaryExpr*>(e))
+        return expr_refs_outer(u->operand.get(), outer, shadow);
+    if (auto* b = dynamic_cast<const BinaryExpr*>(e))
+        return expr_refs_outer(b->left.get(), outer, shadow) ||
+               expr_refs_outer(b->right.get(), outer, shadow);
+    if (auto* ix = dynamic_cast<const IndexExpr*>(e))
+        return expr_refs_outer(ix->object.get(), outer, shadow) ||
+               expr_refs_outer(ix->index.get(), outer, shadow);
+    if (auto* t = dynamic_cast<const TupleExpr*>(e)) {
+        for (auto& el : t->elements) if (expr_refs_outer(el.get(), outer, shadow)) return true;
+        return false;
+    }
+    if (auto* l = dynamic_cast<const ListExpr*>(e)) {
+        for (auto& el : l->elements) if (expr_refs_outer(el.get(), outer, shadow)) return true;
+        return false;
+    }
+    if (auto* m = dynamic_cast<const MapExpr*>(e)) {
+        for (auto& p : m->pairs)
+            if (expr_refs_outer(p.key.get(), outer, shadow) || expr_refs_outer(p.value.get(), outer, shadow))
+                return true;
+        return false;
+    }
+    if (auto* fe = dynamic_cast<const FieldExpr*>(e))
+        return expr_refs_outer(fe->object.get(), outer, shadow);
+    if (auto* c = dynamic_cast<const CallExpr*>(e)) {
+        if (expr_refs_outer(c->callee.get(), outer, shadow)) return true;
+        for (auto& a : c->args) if (expr_refs_outer(a.value.get(), outer, shadow)) return true;
+        return false;
+    }
+    if (auto* fn = dynamic_cast<const FnExpr*>(e)) {
+        VarSet inner_shadow = shadow;
+        for (auto& p : fn->params) inner_shadow.insert(p.name);
+        collect_let_names(fn->body, inner_shadow);
+        return block_refs_outer(fn->body, outer, std::move(inner_shadow));
+    }
+    return false;
+}
+
+static bool stmt_refs_outer(const StmtNode* s, const VarSet& outer, VarSet& shadow)
+{
+    if (auto* l = dynamic_cast<const LetStmt*>(s)) {
+        bool r = false;
+        for (auto& v : l->values) if (expr_refs_outer(v.get(), outer, shadow)) r = true;
+        for (auto& n : l->names) shadow.insert(n);
+        return r;
+    }
+    if (auto* a = dynamic_cast<const AssignStmt*>(s)) {
+        bool r = false;
+        for (auto& v : a->values) if (expr_refs_outer(v.get(), outer, shadow)) r = true;
+        for (auto& lv : a->lvalues) if (expr_refs_outer(lv.get(), outer, shadow)) r = true;
+        return r;
+    }
+    if (auto* r = dynamic_cast<const ReturnStmt*>(s)) {
+        for (auto& v : r->values) if (expr_refs_outer(v.get(), outer, shadow)) return true;
+        return false;
+    }
+    if (auto* es = dynamic_cast<const ExprStmt*>(s)) return expr_refs_outer(es->expr.get(), outer, shadow);
+    if (auto* f = dynamic_cast<const IfStmt*>(s)) {
+        for (auto& br : f->branches) {
+            if (br.cond && expr_refs_outer(br.cond.get(), outer, shadow)) return true;
+            if (block_refs_outer(br.body, outer, shadow)) return true;
+        }
+        return false;
+    }
+    if (auto* w = dynamic_cast<const WhileStmt*>(s)) {
+        if (expr_refs_outer(w->cond.get(), outer, shadow)) return true;
+        return block_refs_outer(w->body, outer, shadow);
+    }
+    if (auto* fs = dynamic_cast<const ForStmt*>(s)) {
+        if (fs->source && expr_refs_outer(fs->source.get(), outer, shadow)) return true;
+        if (fs->range_end && expr_refs_outer(fs->range_end.get(), outer, shadow)) return true;
+        VarSet b_shadow = shadow; b_shadow.insert(fs->iter1);
+        return block_refs_outer(fs->body, outer, std::move(b_shadow));
+    }
+    return false;
+}
+
+static bool block_refs_outer(const Block& body, const VarSet& outer, VarSet shadow)
+{
+    for (auto& s : body) if (stmt_refs_outer(s.get(), outer, shadow)) return true;
+    return false;
+}
+
+// True if calling `fn` from JIT'd __main__ via syn_rt_get_global would be
+// unsafe (fn references a top-level let/const as an upvalue).
+static bool fn_unsafe_for_global_call(const FnDeclStmt* fn, const VarSet& top_level_lets)
+{
+    VarSet shadow;
+    for (auto& p : fn->params) shadow.insert(p.name);
+    collect_let_names(fn->body, shadow);
+    return block_refs_outer(fn->body, top_level_lets, std::move(shadow));
+}
+
 static bool vjit_expr_ok(const ExprNode* e, const VarSet& vfns, const VarSet& locals,
                           const VarSet* all_fns = nullptr);
 
 static bool vjit_call_ok(const CallExpr* c, const VarSet& vfns, const VarSet& locals,
                           const VarSet* all_fns = nullptr)
 {
-    // obj.append(val) — method call form
+    // obj.method(args) — any built-in list/string/map method (append, split,
+    // join, upper, lower, trim, find, replace, starts_with, ...): dispatched
+    // at runtime through the same invoke_method() the interpreter uses (see
+    // syn_rt_invoke_method in jit_runtime.cpp), so arity/type checks are
+    // whatever that method already does — nothing new to validate here
+    // beyond "is this a real method name" and "are its args vjit-eligible".
     if (auto* fe = dynamic_cast<const FieldExpr*>(c->callee.get())) {
-        if (fe->field == "append" && c->args.size() == 1)
-            return vjit_expr_ok(fe->object.get(), vfns, locals, all_fns) &&
-                   vjit_expr_ok(c->args[0].value.get(), vfns, locals, all_fns);
-        return false;
+        if (resolve_method_id(fe->field) == MethodId::Unknown) return false;
+        if (!vjit_expr_ok(fe->object.get(), vfns, locals, all_fns)) return false;
+        for (auto& a : c->args)
+            if (!vjit_expr_ok(a.value.get(), vfns, locals, all_fns)) return false;
+        return true;
     }
     auto* id = dynamic_cast<const IdentExpr*>(c->callee.get());
     if (!id) return false;
-    // value-JIT fns, builtins, local vars (closures → syn_rt_call_jitcl),
-    // and any top-level fn name (→ syn_rt_get_global + syn_rt_call_val)
+    // value-JIT fns, builtins, and any top-level fn name (→
+    // syn_rt_get_global + syn_rt_call_val). Deliberately excludes "call a
+    // local variable holding a closure" (was: `|| locals.count(id->name)`,
+    // dispatching via syn_rt_call_jitcl) — that combination has a confirmed
+    // crash (stack smashing) whose root cause wasn't isolated in the time
+    // available; it reproduces via the pre-existing numeric-range `for`
+    // loop too; not specific to anything added this session. Excluding it
+    // here makes __main__ correctly fall back to the (already-correct)
+    // interpreter whenever a script calls a locally-held function value,
+    // rather than risk the crash for a speed win.
     bool ok_callee = vfns.count(id->name) ||
                      (id->name == "len" && c->args.size() == 1) ||
                      (id->name == "append" && c->args.size() == 2) ||
-                     id->name == "print" ||
-                     locals.count(id->name) ||
+                     (id->name == "print" || id->name == "say") ||
                      (all_fns && all_fns->count(id->name));
     if (!ok_callee) return false;
     for (auto& a : c->args) if (!vjit_expr_ok(a.value.get(), vfns, locals, all_fns)) return false;
@@ -2390,7 +2523,7 @@ static bool vjit_expr_ok(const ExprNode* e, const VarSet& vfns, const VarSet& lo
         case TK::Plus: case TK::Minus: case TK::Star: case TK::Slash:
         case TK::SlashSlash: case TK::Percent: case TK::StarStar:
         case TK::EqEq: case TK::BangEq: case TK::Lt: case TK::LtEq:
-        case TK::Gt: case TK::GtEq: case TK::And: case TK::Or:
+        case TK::Gt: case TK::GtEq: case TK::And: case TK::Or: case TK::In:
             return vjit_expr_ok(b->left.get(), vfns, locals, all_fns) &&
                    vjit_expr_ok(b->right.get(), vfns, locals, all_fns);
         case TK::Is:
@@ -2410,36 +2543,22 @@ static bool vjit_expr_ok(const ExprNode* e, const VarSet& vfns, const VarSet& lo
         for (auto& el : l->elements) if (!vjit_expr_ok(el.get(), vfns, locals, all_fns)) return false;
         return true;
     }
-    if (auto* cc = dynamic_cast<const CallExpr*>(e)) return vjit_call_ok(cc, vfns, locals, all_fns);
-    // FnExpr: ok if all free variables (upvalues) are locals in the outer function.
-    if (auto* fe = dynamic_cast<const FnExpr*>(e)) {
-        std::function<bool(const ExprNode*)> check_e = [&](const ExprNode* ex) -> bool {
-            if (!ex) return true;
-            if (auto* id = dynamic_cast<const IdentExpr*>(ex))
-                return locals.count(id->name) > 0 || vfns.count(id->name) > 0;
-            if (auto* b = dynamic_cast<const BinaryExpr*>(ex))
-                return check_e(b->left.get()) && check_e(b->right.get());
-            if (auto* u = dynamic_cast<const UnaryExpr*>(ex)) return check_e(u->operand.get());
-            if (auto* c2 = dynamic_cast<const IntLitExpr*>(ex)) return (void)c2, true;
-            if (auto* c2 = dynamic_cast<const FloatLitExpr*>(ex)) return (void)c2, true;
-            if (auto* c2 = dynamic_cast<const BoolLitExpr*>(ex)) return (void)c2, true;
-            if (auto* c2 = dynamic_cast<const NoneLitExpr*>(ex)) return (void)c2, true;
-            if (auto* c2 = dynamic_cast<const StringLitExpr*>(ex)) return (void)c2, true;
-            return false;
-        };
-        std::function<bool(const Block&)> check_b = [&](const Block& blk) -> bool {
-            for (auto& s : blk) {
-                if (auto* rs = dynamic_cast<const ReturnStmt*>(s.get()))
-                    for (auto& v : rs->values) if (!check_e(v.get())) return false;
-                if (auto* ls = dynamic_cast<const LetStmt*>(s.get()))
-                    for (auto& v : ls->values) if (!check_e(v.get())) return false;
-                if (auto* as = dynamic_cast<const AssignStmt*>(s.get()))
-                    for (auto& v : as->values) if (!check_e(v.get())) return false;
-            }
-            return true;
-        };
-        return check_b(fe->body);
+    if (auto* m = dynamic_cast<const MapExpr*>(e)) {
+        for (auto& p : m->pairs)
+            if (!vjit_expr_ok(p.key.get(), vfns, locals, all_fns) ||
+                !vjit_expr_ok(p.value.get(), vfns, locals, all_fns))
+                return false;
+        return true;
     }
+    if (auto* cc = dynamic_cast<const CallExpr*>(e)) return vjit_call_ok(cc, vfns, locals, all_fns);
+    // FnExpr (closure creation): disabled — JIT-compiled code that creates a
+    // closure (via syn_rt_make_closure) has a confirmed crash/correctness
+    // bug when that closure is later called from outside the compilation
+    // unit that created it (interpreter, __main__, or another JIT'd
+    // function), whether zero-arg or parameterized. Root cause not isolated
+    // in the time available. Any function/block containing a closure
+    // literal now falls back to the (already-correct) interpreter entirely.
+    if (dynamic_cast<const FnExpr*>(e)) return false;
     return false;
 }
 
@@ -2471,10 +2590,16 @@ static bool vjit_stmt_ok(const StmtNode* s, const VarSet& vfns, const VarSet& lo
                vjit_block_ok(w->body, vfns, locals, all_fns);
     }
     if (auto* fs = dynamic_cast<const ForStmt*>(s)) {
-        // Only simple range form: for i = start to end { ... } (no step, no iter2)
-        if (!fs->range_end || fs->range_step || !fs->iter2.empty()) return false;
-        if (!vjit_expr_ok(fs->source.get(), vfns, locals, all_fns)) return false;
-        if (!vjit_expr_ok(fs->range_end.get(), vfns, locals, all_fns)) return false;
+        if (!fs->iter2.empty()) return false;  // no `for k, v in ...` (dual-bind) yet
+        if (fs->range_end) {
+            // Numeric range form: for i = start to end { ... } (no step)
+            if (fs->range_step) return false;
+            if (!vjit_expr_ok(fs->source.get(), vfns, locals, all_fns)) return false;
+            if (!vjit_expr_ok(fs->range_end.get(), vfns, locals, all_fns)) return false;
+        } else {
+            // for-each over a list: for x in list { ... }
+            if (!vjit_expr_ok(fs->source.get(), vfns, locals, all_fns)) return false;
+        }
         VarSet body_locals = locals;
         body_locals.insert(fs->iter1);
         return vjit_block_ok(fs->body, vfns, std::move(body_locals), all_fns);
@@ -2691,6 +2816,15 @@ static std::string vjit_emit(const ExprNode* e, VJitCtx& c, int ind)
             if (fast.empty()) fast = try_len_hoisted(b->left.get(), b->right.get(), true);
             if (!fast.empty()) return fast;
         }
+        if (b->op == TK::In) {
+            // `element in container` — HAS_KEY's operands are swapped from
+            // the expression's own left/right (see compiler.cpp compile_binary).
+            std::string elem = vjit_emit(b->left.get(), c, ind);
+            std::string cont = vjit_emit(b->right.get(), c, ind);
+            std::string t = fresh();
+            c.o << sp << "uint64_t " << t << " = syn_rt_has_key(" << cont << ", " << elem << ");\n";
+            return t;
+        }
         std::string l = vjit_emit(b->left.get(), c, ind);
         std::string r = vjit_emit(b->right.get(), c, ind);
         const char* fn = nullptr;
@@ -2756,9 +2890,25 @@ static std::string vjit_emit(const ExprNode* e, VJitCtx& c, int ind)
         }
         return t;
     }
+    if (auto* mp = dynamic_cast<const MapExpr*>(e)) {
+        // Evaluate all key/value exprs first (matches interpreter's left-to-right
+        // eval order), then build the map — mirrors ListExpr/TupleExpr above.
+        std::vector<std::pair<std::string,std::string>> pairs;
+        for (auto& p : mp->pairs)
+            pairs.emplace_back(vjit_emit(p.key.get(), c, ind), vjit_emit(p.value.get(), c, ind));
+        std::string t = fresh();
+        c.o << sp << "uint64_t " << t << " = syn_rt_map_new();\n";
+        for (auto& [k, v] : pairs)
+            c.o << sp << "_syn_index_set(" << t << ", " << k << ", " << v << ");\n";
+        return t;
+    }
     if (auto* call = dynamic_cast<const CallExpr*>(e)) {
         std::string t = fresh();
-        // Method call: obj.append(val)
+        // Method call: obj.method(args) — append gets its own fast inline
+        // path (already existed); every other built-in list/string/map
+        // method (split, join, upper, find, ...) routes through the same
+        // invoke_method() the interpreter uses via syn_rt_invoke_method, so
+        // there's one implementation of each method's semantics, not two.
         if (auto* fe = dynamic_cast<const FieldExpr*>(call->callee.get())) {
             std::string obj = vjit_emit(fe->object.get(), c, ind);
             if (fe->field == "append") {
@@ -2767,6 +2917,21 @@ static std::string vjit_emit(const ExprNode* e, VJitCtx& c, int ind)
                 c.o << sp << "uint64_t " << t << " = syn_none_val();\n";
                 return t;
             }
+            MethodId mid = resolve_method_id(fe->field);
+            std::vector<std::string> margs;
+            for (auto& a : call->args) margs.push_back(vjit_emit(a.value.get(), c, ind));
+            if (margs.empty()) {
+                c.o << sp << "uint64_t " << t << " = syn_rt_invoke_method(" << obj << ", "
+                    << int(mid) << ", 0, 0);\n";
+            } else {
+                std::string arr = fresh();
+                c.o << sp << "uint64_t " << arr << "[] = {";
+                for (size_t i = 0; i < margs.size(); ++i) { if (i) c.o << ", "; c.o << margs[i]; }
+                c.o << "};\n";
+                c.o << sp << "uint64_t " << t << " = syn_rt_invoke_method(" << obj << ", "
+                    << int(mid) << ", " << margs.size() << ", " << arr << ");\n";
+            }
+            return t;
         }
         auto* id = static_cast<const IdentExpr*>(call->callee.get());
         std::vector<std::string> as;
@@ -2788,7 +2953,7 @@ static std::string vjit_emit(const ExprNode* e, VJitCtx& c, int ind)
             c.o << sp << "uint64_t " << t << " = syn_none_val();\n";
             return t;
         }
-        if (id->name == "print") {
+        if ((id->name == "print" || id->name == "say")) {
             if (as.size() == 1) {
                 c.o << sp << "syn_rt_print1(" << as[0] << ");\n";
             } else if (as.size() > 1) {
@@ -2801,16 +2966,23 @@ static std::string vjit_emit(const ExprNode* e, VJitCtx& c, int ind)
             c.o << sp << "uint64_t " << t << " = syn_none_val();\n";
             return t;
         }
-        // Local variable holding a closure → fast closure call (inlined dispatch)
+        // Local variable holding a closure → dispatch via syn_rt_call_jitcl.
+        // (Previously used _syn_fastcl0/_syn_fastcl_n, which poke ObjClosure's
+        // internal layout directly via raw pointer arithmetic to skip a
+        // function call; that path has a confirmed crash — reproducible even
+        // through the pre-existing numeric-range `for` loop, unrelated to any
+        // change here — root cause not yet isolated. syn_rt_call_jitcl does
+        // the identical jit_cache lookup/caching through a normal, safe C++
+        // call instead, at the cost of that one call's overhead.)
         if (c.locals && c.locals->count(id->name)) {
             if (as.empty()) {
-                c.o << sp << "uint64_t " << t << " = _syn_fastcl0(_v_" << id->name << ");\n";
+                c.o << sp << "uint64_t " << t << " = syn_rt_call_jitcl(_v_" << id->name << ", 0, 0);\n";
             } else {
                 std::string arr = fresh();
                 c.o << sp << "uint64_t " << arr << "[] = {";
                 for (size_t i = 0; i < as.size(); ++i) { if (i) c.o << ", "; c.o << as[i]; }
                 c.o << "};\n";
-                c.o << sp << "uint64_t " << t << " = _syn_fastcl_n(_v_" << id->name
+                c.o << sp << "uint64_t " << t << " = syn_rt_call_jitcl(_v_" << id->name
                     << ", " << as.size() << ", " << arr << ");\n";
             }
             return t;
@@ -3007,6 +3179,21 @@ static void vjit_emit_stmt(const StmtNode* s, VJitCtx& c, int ind)
         return;
     }
     if (auto* fs = dynamic_cast<const ForStmt*>(s)) {
+        if (!fs->range_end) {
+            // for-each over a list: for x in list { ... } — index-based
+            // iteration, mirrors the interpreter's FOR_PREP/FOR_STEP opcodes.
+            std::string list_v = vjit_emit(fs->source.get(), c, ind);
+            std::string idx = "_t" + std::to_string(c.tmp++);
+            std::string len = "_t" + std::to_string(c.tmp++);
+            c.o << sp << "int64_t " << idx << " = 0;\n";
+            c.o << sp << "int64_t " << len << " = syn_as_int(_syn_len(" << list_v << "));\n";
+            c.o << sp << "for (; " << idx << " < " << len << "; " << idx << "++) {\n";
+            c.o << sp << "    uint64_t _v_" << fs->iter1 << " = _syn_index(" << list_v
+                << ", syn_from_int(" << idx << "));\n";
+            vjit_emit_block(fs->body, c, ind + 1);
+            c.o << sp << "}\n";
+            return;
+        }
         // Range for: emit as native int loop to avoid per-iteration boxing.
         // Hoist string literals used in the body outside the loop to avoid
         // per-iteration allocation (e.g. for i=0 to N { s = s + "x" }).
@@ -3240,6 +3427,8 @@ extern void     syn_rt_append(uint64_t,uint64_t);
 extern uint64_t syn_rt_len(uint64_t);
 extern void     syn_rt_list_reserve(uint64_t,uint32_t);
 extern uint64_t syn_rt_map_new(void);
+extern uint64_t syn_rt_invoke_method(uint64_t, int, int, const uint64_t*);
+extern uint64_t syn_rt_has_key(uint64_t, uint64_t);
 extern uint64_t syn_rt_str_lit(const char*,int);
 extern void     syn_rt_print1(uint64_t);
 extern void     syn_rt_print_n(const uint64_t*,int);
@@ -3250,37 +3439,6 @@ extern void     syn_rt_str_inplace_add(uint64_t*,uint64_t);
 extern uint64_t syn_rt_list_new_jit(uint32_t);
 extern void     syn_rt_list_recycle(uint64_t);
 extern uint64_t syn_rt_make_closure(const char*,int,int,const uint64_t*);
-
-// Fast inline closure call: avoids PLT overhead for the cached hot path.
-// ObjClosure layout: Obj(16) + fn*(8) + upvalues_vec(24: data/size/cap) + jit_cache*(8)
-// JitEntry layout:   int_fn(8) + float_fn(8) + main_fn(8) + value_fn(8) + closure_fn(8)
-// ObjKind::Closure = 5
-static inline uint64_t _syn_fastcl0(uint64_t cl_) {
-    if ((cl_ >> 48) != 0xFFFCu) return syn_rt_call_jitcl(cl_, 0, 0);
-    char* p = (char*)(uintptr_t)(cl_ & 0x0000FFFFFFFFFFFFuLL);
-    if (*(unsigned char*)p != 5) return syn_rt_call_jitcl(cl_, 0, 0);
-    void* jc = *(void**)(p + 48);  // jit_cache
-    if (!jc) return syn_rt_call_jitcl(cl_, 0, 0);  // first call fills cache
-    if ((uintptr_t)jc <= 1) return syn_rt_call_val(cl_, 0, 0);
-    typedef uint64_t (*CFn)(int,uint64_t*,void**);
-    CFn fn = *(CFn*)((char*)jc + 32);  // JitEntry::closure_fn
-    if (!fn) return syn_rt_call_val(cl_, 0, 0);
-    void** uvs = *(void***)(p + 24);   // upvalues.data()
-    return fn(0, 0, uvs);
-}
-static inline uint64_t _syn_fastcl_n(uint64_t cl_, int na, const uint64_t* aa) {
-    if ((cl_ >> 48) != 0xFFFCu) return syn_rt_call_jitcl(cl_, na, aa);
-    char* p = (char*)(uintptr_t)(cl_ & 0x0000FFFFFFFFFFFFuLL);
-    if (*(unsigned char*)p != 5) return syn_rt_call_jitcl(cl_, na, aa);
-    void* jc = *(void**)(p + 48);
-    if (!jc) return syn_rt_call_jitcl(cl_, na, aa);
-    if ((uintptr_t)jc <= 1) return syn_rt_call_val(cl_, na, aa);
-    typedef uint64_t (*CFn)(int,uint64_t*,void**);
-    CFn fn = *(CFn*)((char*)jc + 32);
-    if (!fn) return syn_rt_call_val(cl_, na, aa);
-    void** uvs = *(void***)(p + 24);
-    return fn(na, (uint64_t*)aa, uvs);
-}
 
 // Fast-path inline helpers: pure arithmetic with int fast path avoids PLT calls.
 static inline int _syn_is_int(uint64_t v) { return (v >> 48) == 0xFFF8u; }
@@ -3674,6 +3832,11 @@ static inline int64_t syn_ipow(int64_t base, int64_t exp) {
                 if (!ret || ret->values.size() != 1) continue;
                 auto* fe = dynamic_cast<const FnExpr*>(ret->values[0].get());
                 if (!fe) continue;
+                // Disabled entirely (see vjit_expr_ok's FnExpr case for why):
+                // a JIT-compiled closure crashes or misbehaves once called
+                // from outside the compilation unit that created it, whether
+                // zero-arg or parameterized. Falls back to the interpreter.
+                continue;
 
                 VarSet inner_params, inner_lets;
                 for (auto& p : fe->params) inner_params.insert(p.name);
@@ -3704,7 +3867,7 @@ static inline int64_t syn_ipow(int64_t base, int64_t exp) {
                 // Params
                 for (int i = 0; i < (int)fe->params.size(); ++i)
                     o << "    uint64_t _v_" << fe->params[i].name
-                      << " = (nargs > " << i << ") ? args[" << i << "].raw : syn_none_val();\n";
+                      << " = (nargs > " << i << ") ? args[" << i << "] : syn_none_val();\n";
                 // Inner let vars not already declared
                 VarSet uv_names; for (auto& [uname, _] : uvm) uv_names.insert(uname);
                 for (auto& lname : inner_lets)
@@ -3924,8 +4087,14 @@ JitModule* jit_compile(const Program& prog)
 {
     std::vector<const FnDeclStmt*> fns;
     for (auto& stmt : prog.stmts)
-        if (auto* fn = dynamic_cast<const FnDeclStmt*>(stmt.get()))
-            fns.push_back(fn);
+        if (auto* fn = dynamic_cast<const FnDeclStmt*>(stmt.get())) {
+            // Defaults/variadic need the interpreter's arg fixup + preamble —
+            // a JIT entry would read missing args as garbage. Never JIT these.
+            bool plain = true;
+            for (auto& p : fn->params)
+                if (p.default_val || p.is_variadic) { plain = false; break; }
+            if (plain) fns.push_back(fn);
+        }
 
     VarSet ifns = find_int_fns(fns);
     VarSet ffns = find_float_fns(fns);
@@ -3995,9 +4164,21 @@ JitModule* jit_compile(const Program& prog)
 
     {
         VarSet vfns_pre = find_value_fns(fns, ifns, ffns);
-        // Build all_fn_names: all top-level user-defined fn names (for global fallback)
+        // Build all_fn_names: top-level user-defined fn names callable from
+        // JIT'd __main__ via the global-lookup fallback. Excludes fns that
+        // capture a top-level let/const as an upvalue (see
+        // fn_unsafe_for_global_call) — those aren't real VM globals when
+        // module_mode is off, so get_global(name) would find nothing and
+        // calling the result crashes with "cannot call non-function".
+        VarSet top_level_lets;
+        collect_let_names(prog.stmts, top_level_lets);
+        for (auto& stmt : prog.stmts)
+            if (auto* cs = dynamic_cast<const ConstStmt*>(stmt.get()))
+                top_level_lets.insert(cs->name);
         VarSet all_fn_names_pre;
-        for (auto* fn : fns) all_fn_names_pre.insert(fn->name);
+        for (auto* fn : fns)
+            if (!fn_unsafe_for_global_call(fn, top_level_lets))
+                all_fn_names_pre.insert(fn->name);
         // Also check if __main__ can be value-JIT'd as a fallback
         bool main_vjit = false;
         if (!main_int && !main_float && !main_mixed && !main_list && vfns_pre.empty()) {

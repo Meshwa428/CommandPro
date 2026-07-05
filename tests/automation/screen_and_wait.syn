@@ -1,0 +1,7 @@
+# test: automation/screen_and_wait
+capture "shot.png"
+# expect-platform: ScreenCapture(shot.png)
+capture 0, 0, 1920, 1080 "r.png"
+# expect-platform: ScreenCapture(r.png, 0, 0, 1920, 1080)
+wait 200ms
+# expect-platform: Wait(200000000)

@@ -1,0 +1,5 @@
+# test: automation/keyboard
+press ctrl+c
+# expect-platform: KeyPress(ctrl+c)
+type "hello world"
+# expect-platform: KeyType(hello world)

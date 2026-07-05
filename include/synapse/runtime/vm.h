@@ -6,6 +6,7 @@
 #include "synapse/runtime/value.h"
 #include "synapse/runtime/opcodes.h"
 #include "synapse/backend/jit.h"
+#include "synapse/common/rt_error.h"
 
 namespace syn {
 
@@ -35,6 +36,12 @@ public:
     // Register a native function as a global
     void define_native(const std::string& name, NativeFn fn);
     void define_global(const std::string& name, Value v);
+
+    // Public entry point for natives (e.g. automation stdlib) to raise a
+    // diagnostic-quality RuntimeError — same formatting as VM-internal
+    // errors (see raise() below), best-effort line since natives run
+    // outside run_frame's instruction loop.
+    [[noreturn]] void throw_runtime_error(const char* code, std::string msg) { raise(code, std::move(msg)); }
 
     // Run a compiled top-level function
     // Returns the value of R[0] when HALT is hit, or none if program exits normally
@@ -89,12 +96,77 @@ private:
     ObjUpvalue* capture_upvalue(Value* slot);
     void        close_upvalues(Value* last);
 
-    static constexpr int REGISTER_STACK  = 256 * 64; // 64 frames × 256 regs
-    static constexpr int MAX_FRAMES      = 64;
+    // Zero-fills m_stack[m_stack_zeroed, base+256) on demand the first time a
+    // frame's register window reaches that far — avoids eagerly zeroing all
+    // REGISTER_STACK slots (2.56M Values / ~20MB) at construction, which cost
+    // a real ~8ms/process in first-touch page faults regardless of how
+    // shallow the actual recursion turns out to be. GC root-scanning still
+    // never reads past a real frame's window, and only zeroed-or-written
+    // slots are ever scanned, so this preserves the same safety invariant
+    // incrementally instead of all at once.
+    void ensure_stack_window(int base);
 
-    Value      m_stack[REGISTER_STACK];
-    CallFrame  m_frames[MAX_FRAMES];
+    // Pre-frame arg adjustment: pack *rest extras into a list, fill missing
+    // params with none so the callee's default-value preamble can run.
+    void fixup_args(ObjFunction* fn, int nargs, Value* regs);
+
+    // Builds {"message": msg, "code": code} — the value a `catch e` binds
+    // for a VM-raised (non-`throw`) error.
+    Value make_error_payload(const std::string& code, const std::string& msg);
+
+    // Throws a RuntimeError carrying a stable code, the source line the
+    // currently-executing instruction came from, and a Synapse-level call
+    // stack (see src/common/diag.cpp:print_runtime_error for how it's shown).
+    [[noreturn]] void raise(const char* code, std::string msg, Chunk* ck, uint64_t* pc);
+    // Best-effort overload for call sites with no local (ck, pc) — uses the
+    // top call frame's last-saved pc, which is accurate except mid-run_frame.
+    [[noreturn]] void raise(const char* code, std::string msg);
+    // For `throw expr` — payload is the exact thrown value, not a wrapper.
+    [[noreturn]] void raise_value(Value payload, Chunk* ck, uint64_t* pc);
+
+    // A `return` inside a try body skips TRY_POP (no fallthrough to it), so
+    // its handler would otherwise linger on m_try_handlers pointing at a
+    // frame that no longer exists — a later, unrelated exception could then
+    // wrongly resume at that dead catch dispatcher. Called right after
+    // m_frame_count is decremented on every return.
+    void drop_stale_try_handlers();
+
+    // 1,000 frames (matches Python's default sys.getrecursionlimit()) — was
+    // 64, which threw "stack overflow" on ordinary recursion depths (e.g. a
+    // plain recursive sum to 100). Heap-allocated rather than fixed member
+    // arrays: at larger sizes a fixed array would itself risk blowing the
+    // *host* C++ thread's stack when VM is a local variable. Bigger than
+    // 1000 is possible but costs real fixed startup time (~1.3ms at 128
+    // frames vs ~2.5ms at 2000, measured) — a true dynamic-growth stack
+    // would avoid that tradeoff entirely, but isn't safe with the current
+    // design: call_value() recursively re-enters run_frame() on the C++
+    // call stack for native/JIT calls, so growing (reallocating) m_stack
+    // mid-recursion would leave already-suspended callers' local Value*
+    // pointers dangling into the freed old buffer.
+    static constexpr int REGISTER_STACK  = 256 * 1000;
+    static constexpr int MAX_FRAMES      = 1000;
+
+    Value*     m_stack;
+    CallFrame* m_frames;
     int        m_frame_count = 0;
+    int        m_stack_zeroed = 0;  // m_stack[0, m_stack_zeroed) is known-none/written
+
+    // try/catch: one entry per currently-active `try` block, pushed by
+    // TRY_PUSH and popped by TRY_POP on normal (non-exceptional) completion.
+    // Global rather than per-frame because an exception thrown in a callee
+    // must be catchable by a try/catch in any enclosing caller, not just the
+    // frame it was thrown in — see run_frame()'s catch clause for how
+    // frame_idx decides whether a given run_frame() invocation owns a
+    // handler (its own frame or one pushed via the non-recursive CALL
+    // opcode) versus must re-throw to an outer, already-suspended
+    // invocation (reached only via call_value()'s C++ recursion).
+    struct TryHandler {
+        int        frame_idx;   // m_frame_count value when TRY_PUSH ran
+        uint64_t*  catch_pc;    // resume point: start of the catch dispatcher
+        Chunk*     catch_chunk;
+        int        catch_reg;   // register to bind the caught value into
+    };
+    std::vector<TryHandler> m_try_handlers;
 
     std::unordered_map<std::string, Value>    m_globals;
     ObjUpvalue* m_open_upvalues = nullptr;
