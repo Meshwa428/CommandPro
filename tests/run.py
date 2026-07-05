@@ -13,7 +13,10 @@ against expectations embedded as trailing comments:
     mouse 300, 400
     # expect-platform: MouseMove(300, 400)
 
-Usage: python3 tests/run.py [--release|--debug]
+Auto-builds the target preset first (default: debug) so the suite never
+runs a stale binary. Pass --no-build to skip.
+
+Usage: python3 tests/run.py [--release|--debug] [--no-build]
 """
 import os
 import re
@@ -27,13 +30,25 @@ EXPECT_ERROR_RE    = re.compile(r'^\s*#\s*expect-error:\s*(\S+)')
 EXPECT_PLATFORM_RE = re.compile(r'^\s*#\s*expect-platform:\s*(.*)$')
 
 
-def find_syn_binary(preference=None):
-    order = [preference] if preference else ["release", "debug"]
-    for preset in order:
-        path = os.path.join(REPO_DIR, "build", preset, "syn")
-        if os.path.exists(path):
-            return path
-    print("no syn binary found under build/{release,debug} — build first", file=sys.stderr)
+def build_syn(preset):
+    # Auto-build so the suite never runs a stale binary (the harness reads
+    # build/<preset>/syn, which an ad-hoc `cmake --build build` does not update).
+    print(f"Building syn ({preset})...", file=sys.stderr)
+    r = subprocess.run(["cmake", "--build", "--preset", preset],
+                       cwd=REPO_DIR, capture_output=True)
+    if r.returncode != 0:
+        print(r.stderr.decode().strip(), file=sys.stderr)
+        sys.exit(1)
+
+
+def find_syn_binary(preference=None, build=True):
+    preset = preference or "debug"
+    if build:
+        build_syn(preset)
+    path = os.path.join(REPO_DIR, "build", preset, "syn")
+    if os.path.exists(path):
+        return path
+    print(f"no syn binary at build/{preset}/syn — build failed?", file=sys.stderr)
     sys.exit(1)
 
 
@@ -105,7 +120,7 @@ def discover(category):
 
 def main():
     preference = "release" if "--release" in sys.argv else ("debug" if "--debug" in sys.argv else None)
-    binary = find_syn_binary(preference)
+    binary = find_syn_binary(preference, build="--no-build" not in sys.argv)
 
     total = failed = 0
     for category in ("conformance", "errors", "automation"):
