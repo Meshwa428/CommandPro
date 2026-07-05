@@ -3,10 +3,83 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <random>
 #include <unistd.h>
 
 namespace syn {
+
+// ── Per-user calibration profile ────────────────────────────────────────────────
+
+RatProfile RatProfile::defaults()
+{
+    return { RAT_FITTS_A_MS, RAT_FITTS_B_MS, RAT_CURVATURE_SCALE,
+             /*tremor_sigma=*/0.4, RAT_OVERSHOOT_RATE };
+}
+
+// On-disk layout: 4-byte magic "RAT1" + 5 little-endian float32 (24 bytes).
+static const char RAT_MAGIC[4] = {'R', 'A', 'T', '1'};
+
+bool RatProfile::save(const char* path) const
+{
+    std::FILE* f = std::fopen(path, "wb");
+    if (!f) return false;
+    float v[5] = { float(fitts_a), float(fitts_b), float(curvature_scale),
+                   float(tremor_sigma), float(overshoot_rate) };
+    bool ok = std::fwrite(RAT_MAGIC, 1, 4, f) == 4 &&
+              std::fwrite(v, sizeof(float), 5, f) == 5;
+    std::fclose(f);
+    return ok;
+}
+
+bool RatProfile::load(const char* path, RatProfile& out)
+{
+    std::FILE* f = std::fopen(path, "rb");
+    if (!f) return false;
+    char magic[4];
+    float v[5];
+    bool ok = std::fread(magic, 1, 4, f) == 4 &&
+              std::memcmp(magic, RAT_MAGIC, 4) == 0 &&
+              std::fread(v, sizeof(float), 5, f) == 5;
+    std::fclose(f);
+    if (!ok) return false;
+    // Reject NaN/inf and out-of-range values from a corrupt file.
+    for (float x : v) if (!std::isfinite(x)) return false;
+    if (v[4] < 0.0f || v[4] > 1.0f) return false;         // overshoot_rate
+    if (v[0] < 0.0f || v[1] < 0.0f || v[3] < 0.0f) return false;
+    out = { v[0], v[1], v[2], v[3], v[4] };
+    return true;
+}
+
+std::string rat_user_profile_path()
+{
+    const char* home = std::getenv("HOME");
+    if (!home || !*home) return {};
+    return std::string(home) + "/.config/synapse/rat_user.bin";
+}
+
+const RatProfile& RatModel::active_profile()
+{
+    static RatProfile prof = [] {
+        RatProfile p = RatProfile::defaults();
+        std::string path = rat_user_profile_path();
+        if (!path.empty()) RatProfile::load(path.c_str(), p);  // keep defaults on failure
+        return p;
+    }();
+    return prof;
+}
+
+bool RatModel::active_is_user()
+{
+    static bool is_user = [] {
+        std::string path = rat_user_profile_path();
+        RatProfile tmp;
+        return !path.empty() && RatProfile::load(path.c_str(), tmp);
+    }();
+    return is_user;
+}
 
 // ── Per-session RNG ────────────────────────────────────────────────────────────
 // splitmix64, seeded once per process from std::random_device (Linux: backed
@@ -68,7 +141,9 @@ std::vector<Waypoint> RatModel::generate(int x0, int y0, int x1, int y1,
     if (distance < 1.0) { out.push_back({x1, y1, 0}); return out; }
     if (speed_mult <= 0.0) speed_mult = 1.0; // defensive; callers should validate
 
-    double duration_ms = (RAT_FITTS_A_MS + RAT_FITTS_B_MS *
+    const RatProfile& prof = active_profile();
+
+    double duration_ms = (prof.fitts_a + prof.fitts_b *
                            std::log2(distance / RAT_TARGET_W_PX + 1.0)) / speed_mult;
     duration_ms = std::clamp(duration_ms, 60.0, 4000.0);
 
@@ -86,7 +161,7 @@ std::vector<Waypoint> RatModel::generate(int x0, int y0, int x1, int y1,
 
     double hesitation_ms = 100.0 + rand01(rs) * 200.0; // 100-300ms, §2.5
 
-    bool overshoot = rand01(rs) < RAT_OVERSHOOT_RATE;
+    bool overshoot = rand01(rs) < prof.overshoot_rate;
     double px = x1, py = y1;
     if (overshoot) {
         double frac = 0.03 + rand01(rs) * 0.05; // overshoot by 3-8% of distance
@@ -115,7 +190,7 @@ std::vector<Waypoint> RatModel::generate(int x0, int y0, int x1, int y1,
     }
     segs.back().ex = x1; segs.back().ey = y1; // exact landing, no float drift
 
-    double curvature_amp = distance * RAT_CURVATURE_SCALE;
+    double curvature_amp = distance * prof.curvature_scale;
     double curve_sign = (rand01(rs) < 0.5) ? -1.0 : 1.0; // which side the arm sweeps
 
     double t_cursor = hesitation_ms;
@@ -143,7 +218,7 @@ std::vector<Waypoint> RatModel::generate(int x0, int y0, int x1, int y1,
             // not flat — fast mid-movement is noisier, slow approach is precise.
             double dsdu = 6 * u * (1 - u);
             double local_speed = speed_px_per_ms * dsdu;
-            double jitter = local_speed > 0 ? randn(rs) * (0.4 * local_speed) : 0.0;
+            double jitter = local_speed > 0 ? randn(rs) * (prof.tremor_sigma * local_speed) : 0.0;
 
             double fx = bx + perpx * (arc + jitter);
             double fy = by + perpy * (arc + jitter);

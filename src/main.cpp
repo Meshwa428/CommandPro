@@ -14,6 +14,7 @@
 #endif
 
 #include "synapse/common/stack_guard.h"
+#include "synapse/rat/rat_model.h"
 #include "synapse/frontend/ast.h"
 #include "synapse/frontend/lexer.h"
 #include "synapse/frontend/parser.h"
@@ -705,9 +706,50 @@ static void repl()
     }
 }
 
+// `syn rat <subcommand>` — mouse-model calibration (design 005 §6).
+static int rat_command(int argc, char* argv[])
+{
+    std::string sub = argc >= 3 ? argv[2] : "status";
+
+    if (sub == "status") {
+        const syn::RatProfile& p = syn::RatModel::active_profile();
+        std::string path = syn::rat_user_profile_path();
+        std::cout << "RAT mouse model\n";
+        std::cout << "  profile: " << (syn::RatModel::active_is_user() ? "user calibration" : "baked defaults") << "\n";
+        std::cout << "  file:    " << (path.empty() ? "($HOME unset)" : path) << "\n";
+        std::cout << "  fitts_a         " << p.fitts_a << " ms\n";
+        std::cout << "  fitts_b         " << p.fitts_b << " ms/bit\n";
+        std::cout << "  curvature_scale " << p.curvature_scale << "\n";
+        std::cout << "  tremor_sigma    " << p.tremor_sigma << "\n";
+        std::cout << "  overshoot_rate  " << p.overshoot_rate << "\n";
+        return 0;
+    }
+    if (sub == "reset") {
+        std::string path = syn::rat_user_profile_path();
+        if (path.empty()) { std::cerr << "rat reset: $HOME unset\n"; return 1; }
+        if (std::remove(path.c_str()) == 0) {
+            std::cout << "Deleted " << path << " — back to baked defaults.\n";
+        } else {
+            std::cout << "No user calibration to reset (" << path << " absent).\n";
+        }
+        return 0;
+    }
+    if (sub == "calibrate") {
+        std::cerr << "rat calibrate: interactive overlay not yet available.\n"
+                     "The calibration data layer (profile load/override, status, reset) is in;\n"
+                     "the fullscreen click-to-calibrate overlay is the next step.\n";
+        return 1;
+    }
+    std::cerr << "Usage: syn rat [status|reset|calibrate]\n";
+    return 1;
+}
+
 int main(int argc, char* argv[])
 {
     syn::stack_guard_init();  // record this thread's C-stack bounds (VM + JIT)
+    if (argc >= 2 && std::string(argv[1]) == "rat") {
+        return rat_command(argc, argv);
+    }
     if (argc == 1) {
         repl();
     } else if (argc == 2) {
@@ -715,7 +757,7 @@ int main(int argc, char* argv[])
     } else if (argc == 3 && std::string(argv[1]) == "--disasm") {
         run_file(argv[2], true);
     } else {
-        std::cerr << "Usage: syn [--disasm] [script.syn]\n";
+        std::cerr << "Usage: syn [--disasm] [script.syn]\n       syn rat [status|reset|calibrate]\n";
         return 1;
     }
     return 0;

@@ -2,6 +2,7 @@
 add_executable(syn_tests
     unit/test_lexer.cpp
     unit/test_parser.cpp
+    unit/test_rat_profile.cpp
 )
 target_link_libraries(syn_tests
     PRIVATE
