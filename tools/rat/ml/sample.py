@@ -1,9 +1,8 @@
-"""Sample trajectories from the trained diffusion model and compare to real.
+"""Sample trajectories from the trained model and compare to real data.
 
-Loads the checkpoint, generates (dx,dy,dt) sequences for a spread of
-distances/personas, inverts normalization, reconstructs path + timing, and
-saves tools/rat/ml/out/generated_vs_real.png plus a metrics printout comparing
-generated vs real on curvature, overshoot, velocity-peak timing and dt.
+Reconstructs canonical paths (line + deviation) for both generated and real
+movements and reports the realism metrics: curvature, overshoot, velocity
+peak-time, duration. Saves out/generated_vs_real.png.
 """
 from __future__ import annotations
 import os
@@ -14,7 +13,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from data import load_dataset, MAX_LEN
+from data import load_dataset, smooth, N
 from model import TrajDenoiser, Diffusion
 
 torch.set_num_threads(os.cpu_count() or 4)
@@ -24,102 +23,90 @@ CKPT = OUT / "rat_diffusion.pt"
 
 def load():
     ck = torch.load(CKPT, map_location="cpu", weights_only=False)
-    model = TrajDenoiser(ck["n_personas"], ck["seq_len"],
-                         d_model=ck.get("d_model", 80), n_layers=ck.get("layers", 4))
+    model = TrajDenoiser(ck["n_personas"], ck["seq_len"], d_model=ck["d_model"], n_layers=ck["layers"])
     model.load_state_dict(ck["model"]); model.eval()
     return model, ck
 
 
-def denorm(x, norm):
-    """x: (B,L,3) normalized -> (dx,dy,dt_ms)."""
-    ch_mean = np.asarray(norm["ch_mean"]); ch_std = np.asarray(norm["ch_std"])
-    x = x * ch_std + ch_mean
-    x[..., 2] = np.expm1(np.clip(x[..., 2], None, 9.0))  # dt back to ms, cap
-    x[..., 2] = np.clip(x[..., 2], 0.0, None)
-    return x
+def canon_from_dev(steps):
+    """steps (B,N,3)=(dev_x,dev_y,dt) -> canonical xy (B,N,2)."""
+    s = np.linspace(0.0, 1.0, steps.shape[1])
+    xy = steps[..., :2].copy()
+    xy[..., 0] += s
+    return xy
 
 
-def metrics(steps, mask):
-    """steps: (K,L,3), mask: (K,L). Returns dict of realism stats."""
-    curv, over, peakt, dtmed = [], [], [], []
-    for i in range(len(steps)):
-        L = int(mask[i].sum()) if mask is not None else len(steps[i])
-        if L < 3:
-            continue
-        s = steps[i, :L]
-        xy = s[:, :2]
-        end = xy[-1]
-        d = np.hypot(*end)
+def metrics(steps):
+    """steps (K,N,3): dev_x,dev_y,dt. Speed uses the real per-point dt."""
+    xy = canon_from_dev(steps)
+    dt_all = steps[..., 2]
+    curv, over, peakt, dt_cv = [], [], [], []
+    for i in range(len(xy)):
+        p = xy[i]; dt = np.clip(dt_all[i], 1e-3, None)
+        end = p[-1]; d = np.hypot(*end)
         if d < 1e-3:
             continue
         ax = end / d
-        proj = xy @ ax
-        perp = xy[:, 0] * (-ax[1]) + xy[:, 1] * ax[0]
+        proj = p @ ax
+        perp = p[:, 0] * (-ax[1]) + p[:, 1] * ax[0]
         curv.append(np.abs(perp).max() / d)
         over.append(proj.max() > d * 1.02)
-        dt = np.clip(s[:, 2], 1e-3, None)
-        disp = np.hypot(np.diff(xy[:, 0], prepend=xy[0, 0]),
-                        np.diff(xy[:, 1], prepend=xy[0, 1]))  # per-step displacement
-        speed = disp / dt
-        peakt.append(np.cumsum(dt)[np.argmax(speed)] / dt.sum())
-        dtmed.append(np.median(s[:, 2]))
-    return {
-        "curvature": float(np.median(curv)),
-        "overshoot": float(np.mean(over)),
-        "peak_time": float(np.median(peakt)),
-        "dt_median_ms": float(np.median(dtmed)),
-    }
+        disp = np.hypot(*np.diff(p, axis=0).T)
+        speed = disp / dt[1:]
+        peakt.append((np.argmax(speed) + 1) / (len(p) - 1))
+        dt_cv.append(dt[1:].std() / dt[1:].mean())   # timing burstiness
+    return {"curvature": float(np.median(curv)),
+            "overshoot": float(np.mean(over)),
+            "peak_time": float(np.median(peakt)),
+            "dt_cv": float(np.median(dt_cv))}
 
 
 def main():
     model, ck = load()
     diff = Diffusion(model, T=1000, device="cpu")
     ds = load_dataset()
-    norm = ck["norm"]
+    nm = ck["norm"]
 
-    # Condition on a spread of real distances, a few fixed personas.
     rng = np.random.default_rng(1)
-    B = 200
-    real_idx = rng.choice(len(ds["dist"]), B, replace=False)
-    dist_px = ds["dist"][real_idx]
-    dist_log = ((np.log(dist_px) - norm["d_mean"]) / norm["d_std"]).astype(np.float32)[:, None]
+    B = 400
+    idx = rng.choice(len(ds["dist"]), B, replace=False)
+    dist_px = ds["dist"][idx]
+    dist_n = ((np.log(dist_px) - nm["d_mean"]) / nm["d_std"]).astype(np.float32)[:, None]
+    alpha_px = ds["alpha"][idx]  # condition on the real movements' complexity (fair)
+    alpha_n = ((alpha_px - nm["a_mean"]) / nm["a_std"]).astype(np.float32)[:, None]
     persona = torch.tensor(rng.integers(0, ck["n_personas"], B))
 
-    gen = diff.sample(torch.tensor(dist_log), persona, ck["seq_len"], steps=50).numpy()
-    gen = denorm(gen, norm)
-    gmask = np.ones((B, ck["seq_len"]), np.float32)
+    dev = diff.sample(torch.tensor(dist_n), torch.tensor(alpha_n), persona, N, steps=50).numpy()
+    dev = dev * np.asarray(nm["ch_std"]) + np.asarray(nm["ch_mean"])
+    dev[:, 0] = 0.0; dev[:, -1] = 0.0
+    dev = smooth(dev, w=5)
+    # attach real dt profiles (as generate does) so timing metrics are meaningful
+    prof = np.asarray(ck["dt_profiles"]); pick = rng.integers(0, len(prof), B)
+    dt = prof[pick] * ds["D"][idx][:, None]                   # scale to Fitts-ish duration
+    gen = np.concatenate([dev, dt[..., None]], axis=2)
+    gen_xy = canon_from_dev(gen)
 
-    gm = metrics(gen, gmask)
-    rm = metrics(ds["steps"], ds["mask"])
-    print("            generated | real")
-    for k in ["curvature", "overshoot", "peak_time", "dt_median_ms"]:
-        print(f"  {k:13s} {gm[k]:8.3f} | {rm[k]:.3f}")
+    real = np.concatenate([ds["dev"], (ds["dt_profile"] * ds["D"][:, None])[..., None]], axis=2)
+    gm = metrics(gen)
+    rm = metrics(real)
+    print("             generated | real")
+    for k in ["curvature", "overshoot", "peak_time", "dt_cv"]:
+        print(f"  {k:13s} {gm[k]:9.3f} | {rm[k]:.3f}")
 
-    # Plot generated vs real
-    fig, ax = plt.subplots(1, 3, figsize=(18, 5))
-    for i in range(min(60, B)):
-        xy = gen[i, :, :2]
-        ax[0].plot(xy[:, 0], xy[:, 1], color="crimson", alpha=0.15, lw=1)
-    ax[0].scatter([0, 1], [0, 0], c="black", s=30, zorder=5)
-    ax[0].set_title("GENERATED trajectories"); ax[0].set_ylim(-0.5, 0.5); ax[0].axhline(0, color="gray", lw=0.5)
+    real_xy = canon_from_dev(real)
 
-    ridx = rng.choice(len(ds["steps"]), 60, replace=False)
+    fig, ax = plt.subplots(1, 2, figsize=(14, 5))
+    for i in range(min(80, B)):
+        ax[0].plot(gen_xy[i, :, 0], gen_xy[i, :, 1], color="crimson", alpha=0.12, lw=1)
+    ax[0].set_title("GENERATED"); ax[0].scatter([0, 1], [0, 0], c="black", s=30, zorder=5)
+    ridx = rng.choice(len(real_xy), 80, replace=False)
     for i in ridx:
-        L = int(ds["mask"][i].sum())
-        xy = ds["steps"][i, :L, :2]
-        ax[1].plot(xy[:, 0], xy[:, 1], color="steelblue", alpha=0.15, lw=1)
-    ax[1].scatter([0, 1], [0, 0], c="black", s=30, zorder=5)
-    ax[1].set_title("REAL trajectories"); ax[1].set_ylim(-0.5, 0.5); ax[1].axhline(0, color="gray", lw=0.5)
-
-    # velocity profiles overlay (speed = per-step displacement / dt)
-    for i in range(min(40, B)):
-        xy = gen[i, :, :2]; dt = np.clip(gen[i, :, 2], 1e-3, None)
-        disp = np.hypot(np.diff(xy[:, 0], prepend=xy[0, 0]), np.diff(xy[:, 1], prepend=xy[0, 1]))
-        ax[2].plot(np.cumsum(dt), disp / dt, color="crimson", alpha=0.15, lw=1)
-    ax[2].set_title("GENERATED velocity (speed vs elapsed ms)"); ax[2].set_xlim(0, 4000)
-
-    fig.tight_layout(); fig.savefig(OUT / "out" / "generated_vs_real.png", dpi=110)
+        ax[1].plot(real_xy[i, :, 0], real_xy[i, :, 1], color="steelblue", alpha=0.12, lw=1)
+    ax[1].set_title("REAL"); ax[1].scatter([0, 1], [0, 0], c="black", s=30, zorder=5)
+    for a in ax:
+        a.set_xlim(-0.3, 1.3); a.set_ylim(-0.5, 0.5); a.axhline(0, color="gray", lw=0.5)
     (OUT / "out").mkdir(exist_ok=True)
+    fig.tight_layout(); fig.savefig(OUT / "out" / "generated_vs_real.png", dpi=110)
     print(f"saved {OUT / 'out' / 'generated_vs_real.png'}")
 
 

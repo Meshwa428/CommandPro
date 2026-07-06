@@ -1,95 +1,109 @@
-"""Train the trajectory diffusion model on the real dataset (CPU).
+"""Train the deviation-from-line trajectory diffusion model (CPU, fast).
 
-Normalization (stored in the checkpoint so sampling can invert it):
-  dx, dy : standardized
-  dt     : log1p then standardized (heavy tail: 0..7500ms)
-  dist   : log-px, standardized -> conditioning input
+Targets: dev (dx,dy) per point, standardized per channel.
+Conditioning: log-distance, alpha (complexity), persona.
+Duration D is NOT diffused — it is a near-deterministic function of distance
+(Fitts' law), so we fit log D ~ a*log(dist)+b once and store (a,b,sigma) in the
+checkpoint; generation samples D from it. This keeps the diffusion model focused
+on trajectory SHAPE and stays tiny.
 
-Usage: python train.py [--epochs 300] [--batch 128]
+Usage: python train.py [--epochs 400] [--batch 512]
 """
 from __future__ import annotations
 import argparse
 import os
+import time
 from pathlib import Path
 import numpy as np
 import torch
 
-from data import load_dataset, MAX_LEN
+from data import load_dataset, N
 from model import TrajDenoiser, Diffusion
 
 torch.set_num_threads(os.cpu_count() or 4)
-
-OUT = Path(__file__).resolve().parent
-CKPT = OUT / "rat_diffusion.pt"
+CKPT = Path(__file__).resolve().parent / "rat_diffusion.pt"
 
 
 def build_tensors(ds):
-    steps = ds["steps"].copy()                       # (K,L,3) dx,dy,dt
-    mask = ds["mask"]
-    steps[..., 2] = np.log1p(steps[..., 2])          # dt -> log ms
-
-    valid = mask > 0
-    ch_mean = np.zeros(3, np.float32); ch_std = np.ones(3, np.float32)
-    for c in range(3):
-        v = steps[..., c][valid]
-        ch_mean[c], ch_std[c] = v.mean(), v.std() + 1e-6
-        steps[..., c] = (steps[..., c] - ch_mean[c]) / ch_std[c]
-    steps *= mask[..., None]                          # keep padding at 0
+    dev = ds["dev"][..., :2].copy()                           # (K,N,2) spatial only
+    # scale-only (no mean subtraction): endpoints are exactly 0 and must stay 0 through
+    # denorm, else force-zeroing them creates a discontinuity/jitter.
+    ch_mean = np.zeros(2, np.float32)
+    ch_std = dev.reshape(-1, 2).std(0) + 1e-6
+    dev = dev / ch_std
 
     dist_log = np.log(ds["dist"])
     d_mean, d_std = dist_log.mean(), dist_log.std() + 1e-6
-    dist_log = ((dist_log - d_mean) / d_std).astype(np.float32)[:, None]
+    dist_n = ((dist_log - d_mean) / d_std).astype(np.float32)[:, None]
 
-    norm = {"ch_mean": ch_mean, "ch_std": ch_std, "d_mean": float(d_mean), "d_std": float(d_std)}
-    return (torch.tensor(steps), torch.tensor(mask),
-            torch.tensor(dist_log), torch.tensor(ds["persona"]), norm)
+    a_mean, a_std = ds["alpha"].mean(), ds["alpha"].std() + 1e-6
+    alpha_n = ((ds["alpha"] - a_mean) / a_std).astype(np.float32)[:, None]
+
+    # Fitts: log D = a*log(dist) + b  (least squares); keep residual std for sampling
+    logD = np.log(ds["D"])
+    A = np.stack([dist_log, np.ones_like(dist_log)], 1)
+    (fa, fb), *_ = np.linalg.lstsq(A, logD, rcond=None)
+    sigma = float((logD - A @ [fa, fb]).std())
+
+    norm = {
+        "ch_mean": ch_mean.tolist(), "ch_std": ch_std.tolist(),
+        "d_mean": float(d_mean), "d_std": float(d_std),
+        "a_mean": float(a_mean), "a_std": float(a_std),
+        "alpha_lo": float(ds["alpha"].min()), "alpha_hi": float(ds["alpha"].max()),
+        "fitts_a": float(fa), "fitts_b": float(fb), "fitts_sigma": sigma,
+    }
+    return (torch.tensor(dev, dtype=torch.float32), torch.tensor(dist_n),
+            torch.tensor(alpha_n), torch.tensor(ds["persona"]), norm)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--epochs", type=int, default=150)
-    ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--d_model", type=int, default=80)
+    ap.add_argument("--epochs", type=int, default=400)
+    ap.add_argument("--batch", type=int, default=512)
+    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--d_model", type=int, default=256)
     ap.add_argument("--layers", type=int, default=4)
     args = ap.parse_args()
 
     torch.manual_seed(0)
     ds = load_dataset()
-    x, mask, dist_log, persona, norm = build_tensors(ds)
+    x, dist_n, alpha_n, persona, norm = build_tensors(ds)
     n_personas = len(ds["participants"])
     K = x.shape[0]
-    print(f"train: {K} movements, {n_personas} personas, seq_len {MAX_LEN}", flush=True)
+    print(f"train: {K} movements, {n_personas} personas, N={N}", flush=True)
 
-    model = TrajDenoiser(n_personas, MAX_LEN, d_model=args.d_model, n_layers=args.layers)
+    model = TrajDenoiser(n_personas, N, d_model=args.d_model, n_layers=args.layers)
     diff = Diffusion(model, T=1000, device="cpu")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.epochs)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"model params: {n_params/1e6:.2f}M  threads: {torch.get_num_threads()}", flush=True)
+    print(f"params: {n_params/1e6:.2f}M  threads: {torch.get_num_threads()}", flush=True)
 
-    meta = {
-        "n_personas": n_personas, "seq_len": MAX_LEN,
-        "d_model": args.d_model, "layers": args.layers,
-        "norm": {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in norm.items()},
-        "participants": ds["participants"],
-    }
+    # dt profiles: real per-point timing, normalized to sum=1 (a "time shape").
+    # Generation samples one of these and rescales it to the requested duration ->
+    # genuine human pauses/bursts instead of a modeled (unpredictable) dt.
+    dt_prof = ds["dt_profile"].astype(np.float32)
+    meta = {"n_personas": n_personas, "seq_len": N, "d_model": args.d_model,
+            "layers": args.layers, "norm": norm, "participants": ds["participants"],
+            "dt_profiles": dt_prof, "dt_prof_dist": ds["dist"].astype(np.float32)}
 
     model.train()
+    t0 = time.time()
     for ep in range(args.epochs):
         perm = torch.randperm(K)
         total = 0.0; nb = 0
         for i in range(0, K, args.batch):
             idx = perm[i:i + args.batch]
-            loss = diff.loss(x[idx], dist_log[idx], persona[idx], mask[idx])
+            loss = diff.loss(x[idx], dist_n[idx], alpha_n[idx], persona[idx])
             opt.zero_grad(); loss.backward(); opt.step()
             total += loss.item(); nb += 1
-        if ep % 5 == 0 or ep == args.epochs - 1:
-            print(f"epoch {ep:3d}  loss {total/nb:.4f}", flush=True)
-        if ep % 20 == 0 or ep == args.epochs - 1:  # checkpoint periodically
+        sched.step()
+        if ep % 20 == 0 or ep == args.epochs - 1:
+            print(f"epoch {ep:3d}  loss {total/nb:.4f}  {time.time()-t0:5.1f}s", flush=True)
             torch.save({"model": model.state_dict(), **meta}, CKPT)
 
     torch.save({"model": model.state_dict(), **meta}, CKPT)
-    print(f"saved {CKPT}", flush=True)
+    print(f"saved {CKPT}  ({time.time()-t0:.1f}s total)", flush=True)
 
 
 if __name__ == "__main__":
