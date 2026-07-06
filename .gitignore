@@ -27,3 +27,7 @@ Dataset/mouse-movement-data/
 Dataset/mouse-movement-data.zip
 Dataset/movements.jsonl
 Dataset/movements_stats.txt
+tools/rat/ml/.venv/
+tools/rat/ml/out/
+tools/rat/ml/__pycache__/
+tools/rat/ml/*.pt
