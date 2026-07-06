@@ -837,7 +837,8 @@ Stmt Parser::parse_cmd_stmt()
     }
 }
 
-// mouse 300, 400 [, speed]  →  mouse.move(300, 400 [, speed: speed])
+// mouse 300, 400 [3s]  →  mouse.move(300, 400 [, duration])
+// A trailing duration literal sets the movement time (no method-call ceremony).
 Stmt Parser::parse_mouse_cmd()
 {
     Span sp = advance().span;
@@ -845,8 +846,8 @@ Stmt Parser::parse_mouse_cmd()
     args.push_back(pos_arg(parse_expr()));
     expect(TokenKind::Comma, "expected ',' after x coordinate");
     args.push_back(pos_arg(parse_expr()));
-    if (match(TokenKind::Comma)) {
-        args.push_back(named_arg("speed", parse_expr()));
+    if (check(TokenKind::Duration)) {
+        args.push_back(pos_arg(parse_expr()));  // movement duration
     }
     return cmd_call(sp, "mouse", "move", std::move(args));
 }

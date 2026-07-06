@@ -5,47 +5,37 @@
 # Coordinates assume a ~1920x1080 screen. Lower them if yours is smaller.
 
 say "RAT mode: human-like trajectories (curved, variable speed, tiny overshoot)"
-mouse.mode("rat")
 
-# Trace a rectangle. Each move routes through RAT, so it curves and eases
-# instead of snapping in a straight line. The waits let you watch each one.
+# `mouse x, y` moves through RAT at a natural (Fitts-calibrated) speed.
+# `mouse x, y <duration>` sets the movement time inline — no method calls.
 repeat 2 {
     mouse 400, 300
-    wait 600ms
+    wait 400ms
     mouse 1400, 300
-    wait 600ms
+    wait 400ms
     mouse 1400, 800
-    wait 600ms
+    wait 400ms
     mouse 400, 800
-    wait 600ms
+    wait 400ms
 }
+
+say ""
+say "Inline duration: slow (2s), then fast (250ms) — same distance"
+mouse 400, 300 2s
+wait 300ms
+mouse 1400, 800 250ms
+wait 300ms
 
 say ""
 say "Linear mode: straight line, constant speed (what every other bot does)"
 mouse.mode("linear")
 repeat 2 {
     mouse 400, 300
-    wait 600ms
+    wait 400ms
     mouse 1400, 800
-    wait 600ms
+    wait 400ms
 }
-
-# Back to RAT and show the numbers the model predicts for a move, without
-# actually moving (preview returns {duration_ms, waypoints}).
 mouse.mode("rat")
-say ""
-let p = mouse.preview(1400, 800)
-say "preview move to 1400,800:  {p.duration_ms} ms over {p.waypoints} waypoints"
-
-# Speed knob: 2x faster, then a slow, deliberate move.
-say ""
-say "speed 2.0 (fast) then 0.5 (slow) — same distance, different duration"
-mouse.speed(2.0)
-mouse 400, 300
-wait 500ms
-mouse.speed(0.5)
-mouse 1400, 800
-wait 500ms
 
 say ""
 say "done"

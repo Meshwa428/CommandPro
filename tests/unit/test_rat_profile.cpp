@@ -70,6 +70,19 @@ TEST_CASE("estimate_profile recovers Fitts a/b from clean samples", "[rat]") {
     REQUIRE(p.overshoot_rate <= 1.0);
 }
 
+TEST_CASE("generate honors an explicit duration override", "[rat]") {
+    // A 1000px move with a 2s override should take ~2s (+ pre-movement
+    // hesitation of 100-300ms), and far longer than the Fitts default.
+    auto with = RatModel::generate(0, 0, 1000, 0, 1.0, false, /*duration_ms=*/2000.0);
+    REQUIRE(with.size() > 2);
+    double t_override = with.back().t_ms;
+    REQUIRE(t_override >= 2000.0);
+    REQUIRE(t_override <= 2500.0);   // 2000 + hesitation, no more
+
+    auto def = RatModel::generate(0, 0, 1000, 0);  // Fitts default
+    REQUIRE(def.back().t_ms < t_override);
+}
+
 TEST_CASE("estimate_profile falls back on degenerate input", "[rat]") {
     RatProfile def = RatProfile::defaults();
     REQUIRE(estimate_profile({}).fitts_a == Catch::Approx(def.fitts_a));

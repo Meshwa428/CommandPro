@@ -129,22 +129,24 @@ State-of-the-art (2024): WGAN-GP+LSTM and Diffusion (DMTG arxiv 2024).
 ## 4. Syntax
 
 ```syn
-mouse 300, 400           # RAT model, speed auto-predicted
-mouse 300, 400, 0.5      # half speed (slow, deliberate)
-mouse 300, 400, 2.0      # twice as fast
+mouse 300, 400           # RAT model, movement time auto-predicted (Fitts)
+mouse 300, 400 2s        # take 2 seconds (slow, deliberate)
+mouse 300, 400 250ms     # take 250ms (fast)
 
 drag 10, 10, 400, 300    # RAT-path drag (button held during trajectory)
-drag 10, 10, 400, 300, 0.7
 
-# Stdlib API
-mouse.speed 1.5          # global speed bias for this script
-mouse.mode "linear"      # bypass RAT (testing only)
-mouse.mode "rat"         # back to default
-let t = mouse.preview 300, 400   # inspect without executing
+# Stdlib API (method-call forms, for the rarer knobs)
+mouse.speed(1.5)                 # global speed bias for this script
+mouse.mode("linear")             # bypass RAT (testing only)
+mouse.mode("rat")                # back to default
+let t = mouse.preview(300, 400)  # inspect without executing
 say "~{t.duration_ms}ms, {t.waypoints} waypoints"
 ```
 
-Speed multiplier: `> 0.0` required (compiler enforces). Omit = model predicts natural speed.
+Movement time is set inline with a trailing **duration literal** (`3s`, `500ms`)
+— no comma, no method call — to keep the common case token-cheap. Omit it and
+the model predicts a natural time from Fitts' law and the user's calibration.
+`mouse.speed` remains a global multiplier for the auto-predicted case.
 
 ---
 

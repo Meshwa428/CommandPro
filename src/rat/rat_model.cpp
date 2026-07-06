@@ -178,7 +178,8 @@ static double randn(uint64_t& s) // Box-Muller
 // produces the multi-peaked velocity envelope detectors look for — without
 // needing literal analytic impulse summation.
 std::vector<Waypoint> RatModel::generate(int x0, int y0, int x1, int y1,
-                                          double speed_mult, bool linear_mode)
+                                          double speed_mult, bool linear_mode,
+                                          double duration_ms_override)
 {
     std::vector<Waypoint> out;
     double dx = x1 - x0, dy = y1 - y0;
@@ -188,9 +189,16 @@ std::vector<Waypoint> RatModel::generate(int x0, int y0, int x1, int y1,
 
     const RatProfile& prof = active_profile();
 
-    double duration_ms = (prof.fitts_a + prof.fitts_b *
-                           std::log2(distance / RAT_TARGET_W_PX + 1.0)) / speed_mult;
-    duration_ms = std::clamp(duration_ms, 60.0, 4000.0);
+    double duration_ms;
+    if (duration_ms_override > 0.0) {
+        // Explicit `mouse x, y 3s` — honor it directly (wider bound than the
+        // Fitts default so long, deliberate moves are possible).
+        duration_ms = std::clamp(duration_ms_override, 16.0, 60000.0);
+    } else {
+        duration_ms = (prof.fitts_a + prof.fitts_b *
+                       std::log2(distance / RAT_TARGET_W_PX + 1.0)) / speed_mult;
+        duration_ms = std::clamp(duration_ms, 60.0, 4000.0);
+    }
 
     uint64_t& rs = rng_state();
 

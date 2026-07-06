@@ -78,9 +78,12 @@ void register_automation_stdlib(VM& vm, Platform* platform, const AutomationOpti
         require_input();
         int x = int(arg_int(vm, argc, args, 0, "mouse.move"));
         int y = int(arg_int(vm, argc, args, 1, "mouse.move"));
-        double speed = arg_num_or(argc, args, 2, 1.0) * mstate->speed_bias;
+        // Optional trailing duration: `mouse x, y 3s` sets the movement time.
+        double dur_ms = (argc > 2 && args[2].is_duration())
+                            ? double(args[2].as_duration()) / 1e6 : 0.0;
         auto [cx, cy] = platform->mouse_position();
-        auto path = RatModel::generate(cx, cy, x, y, speed, mstate->linear_mode);
+        auto path = RatModel::generate(cx, cy, x, y, mstate->speed_bias,
+                                       mstate->linear_mode, dur_ms);
         platform->replay_waypoints(path);
         return Value::none_val();
     });

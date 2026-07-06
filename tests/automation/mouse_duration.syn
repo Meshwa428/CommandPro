@@ -1,0 +1,7 @@
+# test: automation/mouse_duration
+# A trailing duration literal sets the movement time inline (mouse x, y <dur>),
+# with no comma and no method call.
+mouse 640, 480 500ms
+# expect-platform: MouseMove(640, 480)
+mouse 100, 100 2s
+# expect-platform: MouseMove(100, 100)

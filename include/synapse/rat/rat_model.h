@@ -56,9 +56,12 @@ public:
     // mode: "rat" (default) uses the physics generator below; "linear"
     // bypasses it entirely (straight line, constant speed) — for testing,
     // per design 005 §4 (`mouse.mode "linear"`).
+    // duration_ms_override > 0 sets the movement time directly (e.g. from
+    // `mouse x, y 3s`), bypassing the Fitts' law estimate and speed_mult.
     static std::vector<Waypoint> generate(int x0, int y0, int x1, int y1,
                                            double speed_mult = 1.0,
-                                           bool linear_mode = false);
+                                           bool linear_mode = false,
+                                           double duration_ms_override = 0.0);
 
     struct Preview { double duration_ms; int waypoints; };
     static Preview preview(int x0, int y0, int x1, int y1, double speed_mult = 1.0);
