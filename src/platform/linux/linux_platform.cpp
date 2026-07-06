@@ -471,6 +471,12 @@ bool LinuxPlatform::calibrate_rat(int movements, std::vector<CalibrationSample>&
                  GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
 
     GC gc = XCreateGC(d, win, 0, nullptr);
+    // Larger bitmap font for the counter if available. XLoadQueryFont returns
+    // null (no async X error) when the font is absent, so we fall back cleanly
+    // to the GC's default font.
+    for (const char* fname : {"10x20", "9x15", "fixed"}) {
+        if (XFontStruct* fs = XLoadQueryFont(d, fname)) { XSetFont(d, gc, fs->fid); break; }
+    }
     std::mt19937 rng(std::random_device{}());
     auto randint = [&](int lo, int hi) { return int(std::uniform_int_distribution<int>(lo, hi)(rng)); };
 
@@ -478,9 +484,20 @@ bool LinuxPlatform::calibrate_rat(int movements, std::vector<CalibrationSample>&
         XClearWindow(d, win);
         XSetForeground(d, gc, white);
         XFillArc(d, win, gc, cx - r, cy - r, 2 * r, 2 * r, 0, 360 * 64);
-        char msg[64];
-        std::snprintf(msg, sizeof(msg), "click the dot  —  %d / %d   (Esc to cancel)", idx, total);
-        XDrawString(d, win, gc, 24, 32, msg, int(std::strlen(msg)));
+
+        // Progress bar (top center): outline + fill for completed movements.
+        int bw = sw / 2, bx = (sw - bw) / 2, by = 48, bh = 26;
+        int done = idx - 1;                       // idx is 1-based current dot
+        XDrawRectangle(d, win, gc, bx, by, bw, bh);
+        int fill = int(double(bw - 2) * done / (total > 0 ? total : 1));
+        if (fill > 0) XFillRectangle(d, win, gc, bx + 1, by + 1, fill, bh - 1);
+
+        // Counter above the bar, and remaining count. ASCII only — XDrawString
+        // is 8-bit and renders multi-byte UTF-8 (e.g. em-dash) as garbage.
+        char msg[96];
+        std::snprintf(msg, sizeof(msg), "Dot %d of %d  -  %d left  (Esc to cancel)",
+                      idx, total, total - done);
+        XDrawString(d, win, gc, bx, by - 12, msg, int(std::strlen(msg)));
         XFlush(d);
     };
 
