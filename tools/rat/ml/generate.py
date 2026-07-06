@@ -46,6 +46,7 @@ class MouseModel:
 
     def generate(self, x0, y0, x1, y1, persona: int = 0, alpha: float | None = None,
                  duration_ms: float | None = None, rate_hz: float = 60.0,
+                 pause_prob: float = 0.0, pause_ms=(400.0, 2500.0),
                  ddim_steps: int = 50, seed=None):
         """Return a list of (x, y, t_ms): real screen coords + absolute time.
 
@@ -53,6 +54,11 @@ class MouseModel:
         shape resolution. Output points = duration * rate_hz (the device sample rate),
         so a longer move gets proportionally more points. rate_hz ~60 = a real mouse's
         polling; raise for smoother, lower for snappier bigger jumps.
+
+        pause_prob: chance of a mid-move DEAD STOP (eyes-wandered distraction). This is
+        a behavioral overlay, not a learned/geometry-driven thing — where a human's
+        attention drifts is random, so it is injected, not predicted. pause_ms = (min,
+        max) hold duration; the pause time is added on top of duration_ms.
         """
         d = math.hypot(x1 - x0, y1 - y0)
         if d < 1.0:
@@ -101,7 +107,23 @@ class MouseModel:
 
         out = [(float(px), float(py), int(round(tt))) for px, py, tt in zip(xr, yr, tq)]
         out[-1] = (float(x1), float(y1), int(round(duration_ms)))
+
+        if pause_prob > 0.0 and np.random.rand() < pause_prob:
+            out = self._inject_pause(out, rate_hz, pause_ms)
         return out
+
+    @staticmethod
+    def _inject_pause(pts, rate_hz, pause_ms):
+        """Freeze the cursor at a random mid-path point for a random hold, then shift
+        the rest of the timeline. A real dead stop (held frames), not a slow glide."""
+        k = np.random.randint(int(len(pts) * 0.2), max(int(len(pts) * 0.85), int(len(pts) * 0.2) + 1))
+        hold = float(np.random.uniform(*pause_ms))
+        frame = 1000.0 / rate_hz
+        x, y, t = pts[k]
+        holds = [(x, y, int(round(t + frame * j))) for j in range(1, max(1, int(hold / frame)) + 1)]
+        shift = int(round(hold))
+        rest = [(px, py, pt + shift) for (px, py, pt) in pts[k + 1:]]
+        return pts[:k + 1] + holds + rest
 
 
 if __name__ == "__main__":
