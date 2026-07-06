@@ -507,7 +507,13 @@ bool LinuxPlatform::calibrate_rat(int movements, std::vector<CalibrationSample>&
             } else if (ev.type == Expose) {
                 draw_dot(tx, ty, r, i + 1, movements);
             } else if (ev.type == MotionNotify) {
-                if (t_first < 0) t_first = double(ev.xmotion.time);
+                // Movement time starts when the cursor actually leaves the start
+                // dot, not on the first tremor event — otherwise reaction/aiming
+                // dwell inflates it and (since generate() adds hesitation
+                // separately) hesitation gets double-counted into fitts_a.
+                double ddx = ev.xmotion.x - start_x, ddy = ev.xmotion.y - start_y;
+                if (t_first < 0 && std::hypot(ddx, ddy) > 6.0)
+                    t_first = double(ev.xmotion.time);
                 path.emplace_back(double(ev.xmotion.x), double(ev.xmotion.y));
             } else if (ev.type == ButtonPress) {
                 t_click = double(ev.xbutton.time);

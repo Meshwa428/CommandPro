@@ -82,10 +82,13 @@ RatProfile estimate_profile(const std::vector<CalibrationSample>& s)
     if (std::fabs(denom) > 1e-9) {
         double b = (n * sxy - sx * sy) / denom;
         double a = (sy - b * sx) / n;
-        // Guard against a degenerate/negative fit from noisy input.
+        // Guard against a degenerate/negative fit, and clamp to sane ranges so a
+        // noisy session can't make every move unusably slow. Movement-time
+        // intercept for a human is well under ~300ms (hesitation is modelled
+        // separately at generation time, so it must not be folded in here).
         if (std::isfinite(a) && std::isfinite(b) && b > 0 && a >= 0) {
-            p.fitts_a = a;
-            p.fitts_b = b;
+            p.fitts_a = std::clamp(a, 0.0, 300.0);
+            p.fitts_b = std::clamp(b, 20.0, 300.0);
         }
     }
     p.curvature_scale = curv / n;
