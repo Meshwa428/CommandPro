@@ -79,14 +79,22 @@ RatProfile estimate_profile(const std::vector<CalibrationSample>& s)
     if (n < 2) return p;  // need at least two points to fit a line
 
     double denom = n * sxx - sx * sx;
+    if (std::getenv("SYN_RAT_DEBUG")) {
+        double b0 = std::fabs(denom) > 1e-9 ? (n * sxy - sx * sy) / denom : 0.0;
+        double a0 = (sy - b0 * sx) / n;
+        std::fprintf(stderr, "[rat] n=%.0f raw fit: a=%.1f b=%.1f (denom=%.3g)\n",
+                     n, a0, b0, denom);
+    }
     if (std::fabs(denom) > 1e-9) {
         double b = (n * sxy - sx * sy) / denom;
         double a = (sy - b * sx) / n;
-        // Guard against a degenerate/negative fit, and clamp to sane ranges so a
-        // noisy session can't make every move unusably slow. Movement-time
-        // intercept for a human is well under ~300ms (hesitation is modelled
-        // separately at generation time, so it must not be folded in here).
-        if (std::isfinite(a) && std::isfinite(b) && b > 0 && a >= 0) {
+        // Accept any real fit with a positive slope; clamp to sane ranges rather
+        // than reject. A slightly negative intercept is a normal least-squares
+        // artifact (short movement times extrapolated to zero difficulty), so
+        // floor it at 0 instead of discarding the whole fit and losing the
+        // user's slope. Intercept stays well under ~300ms because pre-movement
+        // hesitation is modelled separately at generation time.
+        if (std::isfinite(a) && std::isfinite(b) && b > 0) {
             p.fitts_a = std::clamp(a, 0.0, 300.0);
             p.fitts_b = std::clamp(b, 20.0, 300.0);
         }
