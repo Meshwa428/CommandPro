@@ -98,12 +98,19 @@ class MouseModel:
         t = np.cumsum(prof) * duration_ms                   # timestamp per shape node
 
         # resample the (shape, timing) node path to n = duration*rate points, equally
-        # spaced in time. Fast bursts -> big jumps between frames (snap); pauses ->
-        # the cursor barely advances across many frames (hold).
+        # spaced in time. Fast bursts -> big jumps between frames (snap). Where the
+        # profile has a big-dt bin (a real pause), HOLD position across those frames
+        # instead of gliding through it -> a genuine dead stop, not a slow slide.
         n = max(8, int(round(duration_ms / 1000.0 * rate_hz)))
+        frame = 1000.0 / rate_hz
+        pause_thresh = max(3.0 * frame, 40.0)              # dt bin above this = a pause
         tq = np.linspace(0.0, duration_ms, n)
-        xr = np.interp(tq, t, real[:, 0])
-        yr = np.interp(tq, t, real[:, 1])
+        idx = np.clip(np.searchsorted(t, tq, side="right") - 1, 0, self.seq_len - 2)
+        seg_dt = t[idx + 1] - t[idx]
+        frac = np.where(seg_dt > 1e-6, (tq - t[idx]) / seg_dt, 0.0)
+        frac = np.where(seg_dt > pause_thresh, 0.0, frac)  # freeze position during a pause
+        xr = real[idx, 0] + frac * (real[idx + 1, 0] - real[idx, 0])
+        yr = real[idx, 1] + frac * (real[idx + 1, 1] - real[idx, 1])
 
         out = [(float(px), float(py), int(round(tt))) for px, py, tt in zip(xr, yr, tq)]
         out[-1] = (float(x1), float(y1), int(round(duration_ms)))
