@@ -280,7 +280,11 @@ Stmt Parser::parse_stmt()
     if (k == TokenKind::Use)      return parse_use_stmt();
     if (k == TokenKind::In)       return parse_in_scope_stmt();
     if (k == TokenKind::Say)      return parse_say_stmt();
-    if (is_cmd_keyword(k))        return parse_cmd_stmt();
+    // A command keyword followed by `.` is method access on the stdlib object
+    // (mouse.mode(...), keyboard.type(...)), not a command statement — let the
+    // expression parser handle it (it treats command keywords as identifiers).
+    if (is_cmd_keyword(k) && peek(1).kind != TokenKind::Dot)
+        return parse_cmd_stmt();
 
     return parse_assign_or_expr_stmt();
 }

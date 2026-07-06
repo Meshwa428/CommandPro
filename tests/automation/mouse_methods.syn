@@ -1,0 +1,8 @@
+# test: automation/mouse_methods
+# Command keywords (mouse) must still be reachable as stdlib objects when
+# followed by `.` — mouse.mode / mouse.speed are method calls, not the
+# `mouse x, y` command form.
+mouse.mode("linear")
+mouse.speed(2.0)
+mouse 640, 480
+# expect-platform: MouseMove(640, 480)
