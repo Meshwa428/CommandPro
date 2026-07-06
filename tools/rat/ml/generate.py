@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from model import TrajDenoiser, Diffusion
+from model import TrajDenoiser, Diffusion, DtDenoiser, DtDiffusion
 from data import smooth, N
 
 torch.set_num_threads(os.cpu_count() or 4)
@@ -37,6 +37,9 @@ class MouseModel:
                                   d_model=ck["d_model"], n_layers=ck["layers"])
         self.model.load_state_dict(ck["model"]); self.model.eval()
         self.diff = Diffusion(self.model, T=1000, device="cpu")
+        self.dt_model = DtDenoiser(ck["n_personas"], ck["seq_len"])
+        self.dt_model.load_state_dict(ck["dt_model"]); self.dt_model.eval()
+        self.dt_diff = DtDiffusion(self.dt_model, T=1000, device="cpu")
         self.norm = ck["norm"]
         self.seq_len = ck["seq_len"]
         self.n_personas = ck["n_personas"]
@@ -46,18 +49,18 @@ class MouseModel:
 
     def generate(self, x0, y0, x1, y1, persona: int = 0, alpha: float | None = None,
                  duration_ms: float | None = None, rate_hz: float = 60.0,
-                 rest_gap_ms: float = 2500.0, ddim_steps: int = 50, seed=None):
+                 ddim_steps: int = 50, seed=None):
         """Return a list of (x, y, t_ms): real screen coords + absolute time.
 
-        duration_ms is the TOTAL time BUDGET (motion + idle), respected exactly. The
-        aimed motion itself takes its natural Fitts time (physics — you can't glide
-        800px continuously for 10s); any leftover slack is filled with REST pauses
-        whose count scales with the slack (~one per rest_gap_ms). So a bigger budget
-        yields more/longer rests: the amount of idling is predictable from the budget
-        even though where each rest lands is random. None -> natural Fitts time, no slack.
+        duration_ms is the TOTAL time, respected exactly. The TIMING MODEL predicts the
+        per-point dt for this duration — it was trained conditioned on duration, and the
+        data shows longer moves spend proportionally more time paused (pause-fraction
+        0.22 -> 0.64 as duration grows), so the model distributes pauses and slow/fast
+        motion across the whole budget instead of moving fast then freezing. None ->
+        natural Fitts duration.
 
-        Point count is not fixed: output points = total_time * rate_hz. rate_hz ~60 =
-        a real mouse's polling; raise for smoother, lower for snappier bigger jumps.
+        Point count is not fixed: output points = duration * rate_hz. rate_hz ~60 = a
+        real mouse's polling; raise for smoother, lower for snappier bigger jumps.
         """
         d = math.hypot(x1 - x0, y1 - y0)
         if d < 1.0:
@@ -87,63 +90,37 @@ class MouseModel:
         c, si = math.cos(ang), math.sin(ang)
         real = (cxy * d) @ np.array([[c, -si], [si, c]]).T + np.array([x0, y0])
 
-        # natural aimed-motion time (Fitts), independent of the budget
-        t_move = math.exp(nm["fitts_a"] * math.log(d) + nm["fitts_b"]
-                          + nm["fitts_sigma"] * float(np.random.randn()))
-        budget = t_move if duration_ms is None else float(duration_ms)
-        t_move = min(t_move, budget)                        # tight budget -> move faster
-        slack = max(0.0, budget - t_move)
+        # total duration: Fitts natural time unless the caller sets it
+        if duration_ms is None:
+            duration_ms = math.exp(nm["fitts_a"] * math.log(d) + nm["fitts_b"]
+                                   + nm["fitts_sigma"] * float(np.random.randn()))
+        duration_ms = float(duration_ms)
 
-        # timing: real dt profile (pauses/bursts) from a similar-distance move, over t_move
-        near = np.argsort(np.abs(np.log(self.dt_prof_dist) - math.log(d)))[:64]
-        prof = self.dt_profiles[np.random.choice(near)]     # sums to 1
-        t = np.cumsum(prof) * t_move                        # timestamp per shape node
+        # TIMING MODEL: predict the per-point dt profile for THIS duration. Trained
+        # conditioned on duration, it distributes pauses/motion across the whole budget.
+        dur_log = np.array([[(math.log(duration_ms) - nm["dur_mean"]) / nm["dur_std"]]], np.float32)
+        dtp = self.dt_diff.sample(torch.tensor(dist_log), torch.tensor(alpha_n), p,
+                                  torch.tensor(dur_log), self.seq_len, steps=ddim_steps)[0].numpy()
+        dtp = np.expm1(dtp * nm["dt_std"] + nm["dt_mean"])  # back to ms
+        dtp = np.clip(dtp, 0.0, None); dtp[0] = 0.0
+        prof = dtp / dtp.sum() if dtp.sum() > 1e-6 else np.full(self.seq_len, 1.0 / self.seq_len)
+        t = np.cumsum(prof) * duration_ms                   # timestamp per shape node
 
-        # resample motion to n = t_move*rate points, equally spaced in time. Fast bursts
-        # -> big jumps (snap). A big-dt profile bin (a real micro-pause) -> HOLD position
-        # across those frames (dead stop), not a slow slide.
-        n = max(8, int(round(t_move / 1000.0 * rate_hz)))
+        # resample to n = duration*rate points, equally spaced in time. Fast bursts ->
+        # big jumps (snap). Big-dt profile bins (pauses) -> HOLD position (dead stop).
+        n = max(8, int(round(duration_ms / 1000.0 * rate_hz)))
         frame = 1000.0 / rate_hz
         pause_thresh = max(3.0 * frame, 40.0)
-        tq = np.linspace(0.0, t_move, n)
+        tq = np.linspace(0.0, duration_ms, n)
         idx = np.clip(np.searchsorted(t, tq, side="right") - 1, 0, self.seq_len - 2)
         seg_dt = t[idx + 1] - t[idx]
         frac = np.where(seg_dt > 1e-6, (tq - t[idx]) / seg_dt, 0.0)
         frac = np.where(seg_dt > pause_thresh, 0.0, frac)
         xr = real[idx, 0] + frac * (real[idx + 1, 0] - real[idx, 0])
         yr = real[idx, 1] + frac * (real[idx + 1, 1] - real[idx, 1])
-        motion = [(float(px), float(py), tt) for px, py, tt in zip(xr, yr, tq)]
-        motion[-1] = (float(x1), float(y1), t_move)
 
-        # fill the slack with rest pauses (count scales with slack) -> total == budget
-        out = self._add_rests(motion, slack, rate_hz, rest_gap_ms)
-        return [(px, py, int(round(tt))) for px, py, tt in out]
-
-    @staticmethod
-    def _add_rests(pts, slack_ms, rate_hz, rest_gap_ms):
-        """Insert dead-stop rests summing to slack_ms at random points. Rest COUNT
-        scales with slack (~one per rest_gap_ms); placement/durations are random."""
-        if slack_ms < 60.0 or len(pts) < 4:
-            if slack_ms >= 60.0:                            # too short to place -> hold at end
-                x, y, t = pts[-1]
-                pts = pts[:-1] + [(x, y, t + slack_ms)]
-            return pts
-        frame = 1000.0 / rate_hz
-        lo, hi = int(len(pts) * 0.1), int(len(pts) * 0.9)
-        n = max(1, int(np.random.poisson(slack_ms / max(rest_gap_ms, 200.0))))
-        n = min(n, hi - lo)
-        durs = np.diff(np.concatenate([[0.0], np.sort(np.random.uniform(0, slack_ms, n - 1)), [slack_ms]]))
-        locs = sorted(np.random.choice(range(lo, hi), size=n, replace=False))
-        loc_dur = dict(zip(locs, durs))
-        out, shift = [], 0.0
-        for i, (x, y, t) in enumerate(pts):
-            nt = t + shift
-            out.append((x, y, nt))
-            if i in loc_dur:
-                hold = loc_dur[i]
-                for j in range(1, max(1, int(hold / frame)) + 1):
-                    out.append((x, y, nt + frame * j))
-                shift += hold
+        out = [(float(px), float(py), int(round(tt))) for px, py, tt in zip(xr, yr, tq)]
+        out[-1] = (float(x1), float(y1), int(round(duration_ms)))
         return out
 
 

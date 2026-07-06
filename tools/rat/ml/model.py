@@ -90,6 +90,73 @@ class TrajDenoiser(nn.Module):
         return self.out(F.silu(self.out_norm(h))).reshape(B, self.seq_len, self.n_ch)
 
 
+class DtDenoiser(nn.Module):
+    """Timing model: predicts the per-point dt profile (N values), conditioned on
+    distance, alpha, persona AND total duration. Duration is the key input — the data
+    shows longer moves spend proportionally MORE time paused (corr 0.56), so the model
+    learns to distribute pauses through the whole budget instead of zip-then-freeze.
+    Separate net from the shape model, so its (necessarily noisy) timing gradients
+    never pollute the geometry."""
+    def __init__(self, n_personas: int, seq_len: int, d_model: int = 192, n_layers: int = 4):
+        super().__init__()
+        self.seq_len = seq_len
+        c = d_model
+        self.t_embed = SinusoidalEmbed(c)
+        self.t_mlp = nn.Sequential(nn.Linear(c, c), nn.SiLU(), nn.Linear(c, c))
+        self.dist_mlp = nn.Sequential(nn.Linear(1, c), nn.SiLU(), nn.Linear(c, c))
+        self.alpha_mlp = nn.Sequential(nn.Linear(1, c), nn.SiLU(), nn.Linear(c, c))
+        self.dur_mlp = nn.Sequential(nn.Linear(1, c), nn.SiLU(), nn.Linear(c, c))
+        self.persona = nn.Embedding(n_personas, c)
+        self.in_proj = nn.Linear(seq_len, c)
+        self.blocks = nn.ModuleList(ResBlock(c, c) for _ in range(n_layers))
+        self.out_norm = nn.LayerNorm(c)
+        self.out = nn.Linear(c, seq_len)
+        nn.init.zeros_(self.out.weight); nn.init.zeros_(self.out.bias)
+
+    def forward(self, x, t, dist_log, alpha, persona, dur_log):
+        B = x.shape[0]
+        cond = (self.t_mlp(self.t_embed(t)) + self.dist_mlp(dist_log) + self.alpha_mlp(alpha)
+                + self.dur_mlp(dur_log) + self.persona(persona))
+        h = self.in_proj(x.reshape(B, -1))
+        for b in self.blocks:
+            h = b(h, cond)
+        return self.out(F.silu(self.out_norm(h)))          # (B, seq_len)
+
+
+class DtDiffusion:
+    """DDPM loss + DDIM sampling for the 1-channel dt profile (no endpoint pin)."""
+    def __init__(self, model: DtDenoiser, T: int = 1000, device="cpu"):
+        self.model = model; self.T = T; self.device = device
+        self.betas, self.alphas, self.acp = make_beta_schedule(T, device)
+
+    def loss(self, x0, dist_log, alpha, persona, dur_log):
+        B = x0.shape[0]
+        t = torch.randint(0, self.T, (B,), device=self.device)
+        noise = torch.randn_like(x0)
+        a = self.acp[t][:, None]
+        xt = a.sqrt() * x0 + (1 - a).sqrt() * noise
+        pred = self.model(xt, t, dist_log, alpha, persona, dur_log)
+        return ((pred - noise) ** 2).mean()
+
+    @torch.no_grad()
+    def sample(self, dist_log, alpha, persona, dur_log, seq_len, steps: int = 50):
+        B = dist_log.shape[0]
+        x = torch.randn(B, seq_len, device=self.device)
+        ts = torch.linspace(self.T - 1, 0, steps, device=self.device).long()
+        for i in range(len(ts)):
+            t = ts[i].expand(B)
+            a = self.acp[t][:, None]
+            eps = self.model(x, t, dist_log, alpha, persona, dur_log)
+            x0 = (x - (1 - a).sqrt() * eps) / a.sqrt().clamp(min=1e-5)
+            x0 = x0.clamp(-4.0, 4.0)
+            if i < len(ts) - 1:
+                a_next = self.acp[ts[i + 1]]
+                x = a_next.sqrt() * x0 + (1 - a_next).sqrt() * eps
+            else:
+                x = x0
+        return x
+
+
 class Diffusion:
     """DDPM training loss + DDIM sampling with endpoint pinning."""
     def __init__(self, model: TrajDenoiser, T: int = 1000, device="cpu"):
