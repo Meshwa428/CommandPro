@@ -47,7 +47,7 @@ def metrics(steps, mask):
         if L < 3:
             continue
         s = steps[i, :L]
-        xy = np.cumsum(s[:, :2], axis=0)
+        xy = s[:, :2]
         end = xy[-1]
         d = np.hypot(*end)
         if d < 1e-3:
@@ -58,7 +58,9 @@ def metrics(steps, mask):
         curv.append(np.abs(perp).max() / d)
         over.append(proj.max() > d * 1.02)
         dt = np.clip(s[:, 2], 1e-3, None)
-        speed = np.hypot(s[:, 0], s[:, 1]) / dt
+        disp = np.hypot(np.diff(xy[:, 0], prepend=xy[0, 0]),
+                        np.diff(xy[:, 1], prepend=xy[0, 1]))  # per-step displacement
+        speed = disp / dt
         peakt.append(np.cumsum(dt)[np.argmax(speed)] / dt.sum())
         dtmed.append(np.median(s[:, 2]))
     return {
@@ -96,7 +98,7 @@ def main():
     # Plot generated vs real
     fig, ax = plt.subplots(1, 3, figsize=(18, 5))
     for i in range(min(60, B)):
-        xy = np.cumsum(gen[i, :, :2], axis=0)
+        xy = gen[i, :, :2]
         ax[0].plot(xy[:, 0], xy[:, 1], color="crimson", alpha=0.15, lw=1)
     ax[0].scatter([0, 1], [0, 0], c="black", s=30, zorder=5)
     ax[0].set_title("GENERATED trajectories"); ax[0].set_ylim(-0.5, 0.5); ax[0].axhline(0, color="gray", lw=0.5)
@@ -104,15 +106,16 @@ def main():
     ridx = rng.choice(len(ds["steps"]), 60, replace=False)
     for i in ridx:
         L = int(ds["mask"][i].sum())
-        xy = np.cumsum(ds["steps"][i, :L, :2], axis=0)
+        xy = ds["steps"][i, :L, :2]
         ax[1].plot(xy[:, 0], xy[:, 1], color="steelblue", alpha=0.15, lw=1)
     ax[1].scatter([0, 1], [0, 0], c="black", s=30, zorder=5)
     ax[1].set_title("REAL trajectories"); ax[1].set_ylim(-0.5, 0.5); ax[1].axhline(0, color="gray", lw=0.5)
 
-    # velocity profiles overlay
+    # velocity profiles overlay (speed = per-step displacement / dt)
     for i in range(min(40, B)):
-        dt = np.clip(gen[i, :, 2], 1e-3, None); sp = np.hypot(gen[i, :, 0], gen[i, :, 1]) / dt
-        ax[2].plot(np.cumsum(dt), sp, color="crimson", alpha=0.15, lw=1)
+        xy = gen[i, :, :2]; dt = np.clip(gen[i, :, 2], 1e-3, None)
+        disp = np.hypot(np.diff(xy[:, 0], prepend=xy[0, 0]), np.diff(xy[:, 1], prepend=xy[0, 1]))
+        ax[2].plot(np.cumsum(dt), disp / dt, color="crimson", alpha=0.15, lw=1)
     ax[2].set_title("GENERATED velocity (speed vs elapsed ms)"); ax[2].set_xlim(0, 4000)
 
     fig.tight_layout(); fig.savefig(OUT / "out" / "generated_vs_real.png", dpi=110)

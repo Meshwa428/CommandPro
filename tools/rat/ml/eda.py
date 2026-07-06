@@ -30,7 +30,7 @@ def main():
     # 1) Reconstructed canonical trajectories
     for i in rng.choice(len(steps), 120, replace=False):
         L = int(mask[i].sum())
-        xy = np.cumsum(steps[i, :L, :2], axis=0)
+        xy = steps[i, :L, :2]
         ax[0, 0].plot(xy[:, 0], xy[:, 1], color="steelblue", alpha=0.12, lw=1)
     ax[0, 0].scatter([0, 1], [0, 0], c="red", zorder=5, s=30)
     ax[0, 0].set_title("Real trajectories (canonical: start 0,0 -> target 1,0)")
@@ -40,8 +40,9 @@ def main():
     for i in rng.choice(len(steps), 50, replace=False):
         L = int(mask[i].sum())
         dt = steps[i, :L, 2]
-        step = np.hypot(steps[i, :L, 0], steps[i, :L, 1])
-        speed = step / np.clip(dt, 1e-3, None)
+        xy = steps[i, :L, :2]
+        disp = np.hypot(np.diff(xy[:, 0], prepend=xy[0, 0]), np.diff(xy[:, 1], prepend=xy[0, 1]))
+        speed = disp / np.clip(dt, 1e-3, None)
         elapsed = np.cumsum(dt)
         ax[0, 1].plot(elapsed, speed, color="darkgreen", alpha=0.2, lw=1)
     ax[0, 1].set_title("True velocity profiles (speed vs real elapsed ms)")
@@ -61,7 +62,7 @@ def main():
         paths = []
         for i in sel:
             L = int(mask[i].sum())
-            xy = np.cumsum(steps[i, :L, :2], axis=0)
+            xy = steps[i, :L, :2]
             # resample to 32 pts for averaging
             g = np.linspace(0, len(xy) - 1, 32).astype(int)
             paths.append(xy[g])

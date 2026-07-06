@@ -1,16 +1,18 @@
-"""RAT dataset pipeline — per-point (dx, dy, dt) representation.
+"""RAT dataset pipeline — per-point (x, y, dt) representation.
 
 Each real movement is a sequence of samples (x, y, t_ms) at IRREGULAR times —
 that irregular timing (pauses, micro-hesitations, hardware jitter) is the human
-signature, so we keep it instead of resampling to uniform time. The model learns
-to emit, per step, both where the cursor goes next AND how long it takes:
+signature, so we keep it instead of resampling to uniform time. The model emits,
+per point, the ABSOLUTE canonical position AND the time since the previous point:
 
-    step_i = (dx_i, dy_i, dt_i)
+    step_i = (x_i, y_i, dt_i)
 
-Positions are put in a canonical frame (start at origin, target on +x, scaled so
-the target is at (1,0)); dt stays in real milliseconds. A path is reconstructed
-by cumulative-summing dx,dy and dt. Sequences are padded to MAX_LEN with a mask;
-paths longer than MAX_LEN are subsampled by index (endpoints kept).
+Absolute positions (not deltas) avoid cumulative random-walk drift — a small
+per-step error no longer accumulates into a wandering path, and the endpoint
+stays anchored near the target. Positions are in a canonical frame (start at
+origin, target on +x, scaled so the target is at (1,0)); dt stays in real ms.
+A path is just the positions; its timing is cumsum(dt). Sequences are padded to
+MAX_LEN with a mask; paths longer than MAX_LEN are subsampled (endpoints kept).
 
 Conditioning: distance (px), persona (participant id).
 """
@@ -35,7 +37,7 @@ def _subsample(path: np.ndarray, max_pts: int) -> np.ndarray:
 
 
 def canonicalize(rec: dict):
-    """Return (steps[L,3]=(dx,dy,dt_ms), dist_px) or None. L <= MAX_LEN."""
+    """Return (steps[L,3]=(x,y,dt_ms), dist_px) or None. L <= MAX_LEN."""
     path = np.asarray(rec["path"], dtype=np.float64)
     if path.shape[0] < 3:
         return None
@@ -45,19 +47,18 @@ def canonicalize(rec: dict):
     if d < 1.0:
         return None
 
-    path = _subsample(path, MAX_LEN + 1)      # +1 sample -> MAX_LEN steps
+    path = _subsample(path, MAX_LEN)          # keep <= MAX_LEN points
 
-    xy = path[:, :2] - start                  # translate
+    xy = path[:, :2] - start                  # translate: start at origin
     ang = math.atan2(end[1] - start[1], end[0] - start[0])
     c, s = math.cos(-ang), math.sin(-ang)     # rotate target onto +x
     xy = xy @ np.array([[c, -s], [s, c]]).T
     xy /= d                                    # scale: target near (1,0)
 
     t = np.maximum.accumulate(path[:, 2])     # monotone time
-    dxy = np.diff(xy, axis=0)                  # (L,2) position deltas
-    dt = np.diff(t)[:, None]                   # (L,1) time deltas, ms
+    dt = np.diff(t, prepend=t[0])[:, None]    # (L,1) time since prev point, ms
     dt = np.clip(dt, 0.0, None)
-    steps = np.concatenate([dxy, dt], axis=1).astype(np.float32)  # (L,3)
+    steps = np.concatenate([xy.astype(np.float32), dt.astype(np.float32)], axis=1)  # (L,3)
     if steps.shape[0] < 2:
         return None
     return steps, d
@@ -97,12 +98,11 @@ if __name__ == "__main__":
     st, mask = ds["steps"], ds["mask"]
     lens = mask.sum(1)
     dt = st[..., 2][mask > 0]
-    dxy = np.hypot(st[..., 0], st[..., 1])[mask > 0]
     print(f"movements: {len(st)}  personas: {len(ds['participants'])}")
     print(f"steps/move: min={int(lens.min())} med={int(np.median(lens))} max={int(lens.max())}")
     print(f"dt ms/step: min={dt.min():.1f} med={np.median(dt):.1f} max={dt.max():.1f} mean={dt.mean():.1f}")
-    print(f"step size (canonical): med={np.median(dxy):.4f} max={dxy.max():.4f}")
-    # reconstruct one movement's total time == real duration check
+    # endpoint should sit near (1,0); duration == real
     i = 0
-    L = int(lens[i]); total = st[i, :L, 2].sum()
-    print(f"move0 reconstructed duration: {total:.0f} ms over {L} steps")
+    L = int(lens[i])
+    print(f"move0 endpoint: ({st[i,L-1,0]:.3f}, {st[i,L-1,1]:.3f})  (expect ~1,0)")
+    print(f"move0 duration: {st[i,:L,2].sum():.0f} ms over {L} points")
