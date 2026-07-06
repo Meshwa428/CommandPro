@@ -84,7 +84,9 @@ if(UNIX AND NOT APPLE)
     find_package(X11)
     find_package(PNG)
     if(X11_FOUND AND X11_Xtst_FOUND AND PNG_FOUND)
-        add_library(syn_linux_platform MODULE src/platform/linux/linux_platform.cpp)
+        add_library(syn_linux_platform MODULE
+            src/platform/linux/linux_platform.cpp
+            src/platform/linux/uinput_device.cpp)
         target_include_directories(syn_linux_platform PRIVATE include)
         target_compile_features(syn_linux_platform PRIVATE cxx_std_20)
         target_link_libraries(syn_linux_platform PRIVATE ${X11_LIBRARIES} ${X11_Xtst_LIB} PNG::PNG)

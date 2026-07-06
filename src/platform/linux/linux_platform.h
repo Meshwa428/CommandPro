@@ -1,5 +1,6 @@
 #pragma once
 #include "synapse/platform/platform.h"
+#include "uinput_device.h"
 
 // Forward-declare Xlib types instead of including Xlib.h here — Xlib.h
 // `#define`s generic names (Window, Font, Time, ...) that collide badly if
@@ -49,7 +50,13 @@ public:
     bool calibrate_rat(int movements, std::vector<CalibrationSample>& out) override;
 
 private:
-    _XDisplay* m_display;
+    // Lazily create the uinput device (mapped to the current X screen size) so
+    // input moves the *visible* cursor on Wayland. Returns false if /dev/uinput
+    // isn't writable, in which case callers fall back to XTest.
+    bool use_uinput();
+
+    _XDisplay*   m_display;
+    UinputDevice m_uinput;
 };
 
 } // namespace syn

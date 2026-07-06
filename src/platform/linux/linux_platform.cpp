@@ -50,22 +50,36 @@ static Display* dpy(_XDisplay*& d)
 
 // ── Mouse ────────────────────────────────────────────────────────────────────
 
+bool LinuxPlatform::use_uinput()
+{
+    if (m_uinput.is_open()) return true;
+    Display* d = dpy(m_display);
+    int scr = DefaultScreen(d);
+    return m_uinput.ensure_open(DisplayWidth(d, scr), DisplayHeight(d, scr));
+}
+
 void LinuxPlatform::mouse_move_to(int x, int y)
 {
+    if (use_uinput()) { m_uinput.move_abs(x, y); return; }
     XTestFakeMotionEvent(dpy(m_display), -1, x, y, CurrentTime);
     XFlush(dpy(m_display));
 }
 
 void LinuxPlatform::replay_waypoints(const std::vector<Waypoint>& path)
 {
+    bool uinput = use_uinput();
     uint32_t last_t = 0;
     for (const auto& wp : path) {
         if (wp.t_ms > last_t) {
             std::this_thread::sleep_for(std::chrono::milliseconds(wp.t_ms - last_t));
             last_t = wp.t_ms;
         }
-        XTestFakeMotionEvent(dpy(m_display), -1, wp.x, wp.y, CurrentTime);
-        XFlush(dpy(m_display));
+        if (uinput) {
+            m_uinput.move_abs(wp.x, wp.y);
+        } else {
+            XTestFakeMotionEvent(dpy(m_display), -1, wp.x, wp.y, CurrentTime);
+            XFlush(dpy(m_display));
+        }
     }
 }
 
@@ -78,6 +92,14 @@ static unsigned int button_code(const std::string& button)
 
 void LinuxPlatform::mouse_click(const std::string& button, int count)
 {
+    if (use_uinput()) {
+        for (int i = 0; i < count; ++i) {
+            m_uinput.button(button, true);
+            m_uinput.button(button, false);
+            if (i + 1 < count) std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        }
+        return;
+    }
     unsigned int b = button_code(button);
     for (int i = 0; i < count; ++i) {
         XTestFakeButtonEvent(dpy(m_display), b, True, CurrentTime);
@@ -89,18 +111,21 @@ void LinuxPlatform::mouse_click(const std::string& button, int count)
 
 void LinuxPlatform::mouse_hold(const std::string& button)
 {
+    if (use_uinput()) { m_uinput.button(button, true); return; }
     XTestFakeButtonEvent(dpy(m_display), button_code(button), True, CurrentTime);
     XFlush(dpy(m_display));
 }
 
 void LinuxPlatform::mouse_release(const std::string& button)
 {
+    if (use_uinput()) { m_uinput.button(button, false); return; }
     XTestFakeButtonEvent(dpy(m_display), button_code(button), False, CurrentTime);
     XFlush(dpy(m_display));
 }
 
 void LinuxPlatform::mouse_scroll(const std::string& direction, int amount)
 {
+    if (use_uinput()) { m_uinput.scroll(direction, amount); return; }
     // X11 scroll wheel is button 4 (up) / 5 (down) / 6 (left) / 7 (right).
     unsigned int b = (direction == "down") ? 5 : (direction == "left") ? 6
                     : (direction == "right") ? 7 : 4;
@@ -177,6 +202,7 @@ static std::string keysym_name_for_key(const std::string& key)
 
 void LinuxPlatform::key_press(const std::string& chord)
 {
+    if (use_uinput()) { m_uinput.key_press(chord); return; }
     Display* d = dpy(m_display);
     std::vector<std::string> mods; std::string key;
     parse_chord(chord, mods, key);
@@ -197,6 +223,7 @@ void LinuxPlatform::key_press(const std::string& chord)
 
 void LinuxPlatform::key_hold(const std::string& chord)
 {
+    if (use_uinput()) { m_uinput.key_hold(chord); return; }
     Display* d = dpy(m_display);
     std::vector<std::string> mods; std::string key;
     parse_chord(chord, mods, key);
@@ -207,6 +234,7 @@ void LinuxPlatform::key_hold(const std::string& chord)
 
 void LinuxPlatform::key_release(const std::string& chord)
 {
+    if (use_uinput()) { m_uinput.key_release(chord); return; }
     Display* d = dpy(m_display);
     std::vector<std::string> mods; std::string key;
     parse_chord(chord, mods, key);
@@ -217,6 +245,7 @@ void LinuxPlatform::key_release(const std::string& chord)
 
 void LinuxPlatform::key_type(const std::string& text)
 {
+    if (use_uinput()) { m_uinput.key_type(text); return; }
     Display* d = dpy(m_display);
     KeyCode shift = keycode_for(d, "Shift_L");
     for (unsigned char c : text) {
