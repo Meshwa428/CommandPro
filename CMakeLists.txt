@@ -110,9 +110,25 @@ endif()
 # jit_runtime.cpp is compiled into the executable (not libsynapse) so its
 # syn_rt_* symbols are present in the dynamic symbol table and resolvable by
 # dlopened JIT modules. ENABLE_EXPORTS adds -rdynamic / --export-dynamic.
-add_executable(syn src/main.cpp src/backend/jit_runtime.cpp)
+add_executable(syn src/main.cpp src/backend/jit_runtime.cpp src/repl_line.cpp)
 target_link_libraries(syn PRIVATE libsynapse)
 set_target_properties(syn PROPERTIES ENABLE_EXPORTS ON)
+
+# Optional GNU readline for REPL line editing + history. Falls back to plain
+# getline (no arrow keys/history) when unavailable, so it's not required. Only
+# src/repl_line.cpp sees readline's headers (its macros collide with opcode
+# names), so the define is scoped to that source file.
+find_library(READLINE_LIB readline)
+find_path(READLINE_INCLUDE readline/readline.h)
+if(READLINE_LIB AND READLINE_INCLUDE)
+    set_source_files_properties(src/repl_line.cpp PROPERTIES
+        COMPILE_DEFINITIONS SYN_HAVE_READLINE
+        INCLUDE_DIRECTORIES ${READLINE_INCLUDE})
+    target_link_libraries(syn PRIVATE ${READLINE_LIB})
+    message(STATUS "REPL: GNU readline enabled (${READLINE_LIB})")
+else()
+    message(STATUS "REPL: readline not found — using plain getline")
+endif()
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 enable_testing()

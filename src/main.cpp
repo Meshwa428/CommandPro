@@ -14,6 +14,7 @@
 #endif
 
 #include "synapse/common/stack_guard.h"
+#include "synapse/repl_line.h"
 #include "synapse/rat/rat_model.h"
 #include "synapse/frontend/ast.h"
 #include "synapse/frontend/lexer.h"
@@ -674,10 +675,16 @@ static void repl()
     register_stdlib(vm);
     syn::register_automation_stdlib(vm, make_platform(), syn::AutomationOptions{});
 
+    // Persist history across sessions (up-arrow recalls past sessions' lines).
+    std::string hist_path;
+    if (const char* home = std::getenv("HOME")) {
+        hist_path = std::string(home) + "/.synapse_history";
+        syn::repl_history_load(hist_path.c_str());
+    }
+
     std::string line;
     while (true) {
-        std::cout << ">>> ";
-        if (!std::getline(std::cin, line)) break;
+        if (!syn::repl_read_line(">>> ", line)) { std::cout << "\n"; break; }
         if (line == "exit" || line == "quit") break;
         if (line.empty()) continue;
 
@@ -704,6 +711,8 @@ static void repl()
             std::cerr << "RuntimeError: " << ex.what() << '\n';
         }
     }
+
+    if (!hist_path.empty()) syn::repl_history_save(hist_path.c_str());
 }
 
 // `syn rat <subcommand>` — mouse-model calibration (design 005 §6).
