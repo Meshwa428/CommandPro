@@ -45,8 +45,15 @@ class MouseModel:
         self.dt_prof_dist = np.asarray(ck["dt_prof_dist"])    # (K,) their move distances
 
     def generate(self, x0, y0, x1, y1, persona: int = 0, alpha: float | None = None,
-                 duration_ms: float | None = None, ddim_steps: int = 50, seed=None):
-        """Return a list of (x, y, t_ms): real screen coords + absolute time."""
+                 duration_ms: float | None = None, rate_hz: float = 60.0,
+                 ddim_steps: int = 50, seed=None):
+        """Return a list of (x, y, t_ms): real screen coords + absolute time.
+
+        Point count is NOT fixed: the model's 64-node output is only the internal
+        shape resolution. Output points = duration * rate_hz (the device sample rate),
+        so a longer move gets proportionally more points. rate_hz ~60 = a real mouse's
+        polling; raise for smoother, lower for snappier bigger jumps.
+        """
         d = math.hypot(x1 - x0, y1 - y0)
         if d < 1.0:
             return [(float(x1), float(y1), 0)]
@@ -82,19 +89,25 @@ class MouseModel:
             duration_ms = math.exp(logD)
         near = np.argsort(np.abs(np.log(self.dt_prof_dist) - math.log(d)))[:64]
         prof = self.dt_profiles[np.random.choice(near)]     # sums to 1
-        t = np.cumsum(prof) * duration_ms
+        t = np.cumsum(prof) * duration_ms                   # timestamp per shape node
 
-        out = [(float(px), float(py), int(round(tt))) for (px, py), tt in zip(real, t)]
+        # resample the (shape, timing) node path to n = duration*rate points, equally
+        # spaced in time. Fast bursts -> big jumps between frames (snap); pauses ->
+        # the cursor barely advances across many frames (hold).
+        n = max(8, int(round(duration_ms / 1000.0 * rate_hz)))
+        tq = np.linspace(0.0, duration_ms, n)
+        xr = np.interp(tq, t, real[:, 0])
+        yr = np.interp(tq, t, real[:, 1])
+
+        out = [(float(px), float(py), int(round(tt))) for px, py, tt in zip(xr, yr, tq)]
         out[-1] = (float(x1), float(y1), int(round(duration_ms)))
         return out
 
 
 if __name__ == "__main__":
     m = MouseModel()
-    for a in (1.1, 1.8):
-        path = m.generate(100, 100, 900, 600, persona=3, alpha=a, seed=0)
-        xy = np.array([(p[0], p[1]) for p in path])
-        seg = np.hypot(*np.diff(xy, axis=0).T).sum()
-        chord = math.hypot(800, 500)
-        print(f"alpha={a}: {len(path)} pts, {path[-1][2]} ms, pathlen/chord={seg/chord:.2f}, "
+    # point count scales with duration (not fixed 64)
+    for dur in (500, 1000, 3000, 8000):
+        path = m.generate(100, 100, 900, 600, persona=3, alpha=1.3, duration_ms=dur, seed=0)
+        print(f"duration={dur:5d}ms -> {len(path):4d} pts ({len(path)/(dur/1000):.0f}/s), "
               f"end=({path[-1][0]:.0f},{path[-1][1]:.0f}) target=(900,600)")
