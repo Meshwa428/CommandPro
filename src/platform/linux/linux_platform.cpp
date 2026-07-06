@@ -55,7 +55,16 @@ bool LinuxPlatform::use_uinput()
     if (m_uinput.is_open()) return true;
     Display* d = dpy(m_display);
     int scr = DefaultScreen(d);
-    return m_uinput.ensure_open(DisplayWidth(d, scr), DisplayHeight(d, scr));
+    if (!m_uinput.ensure_open(DisplayWidth(d, scr), DisplayHeight(d, scr)))
+        return false;
+    // Seed our authoritative cursor position from X once, so the first move
+    // starts from roughly the real spot. After that we track it ourselves
+    // (XQueryPointer doesn't follow the uinput-moved cursor on Wayland).
+    Window root = DefaultRootWindow(d), rr, rc;
+    int rx, ry, wx, wy; unsigned int mask;
+    if (XQueryPointer(d, root, &rr, &rc, &rx, &ry, &wx, &wy, &mask))
+        m_uinput.seed_pos(rx, ry);
+    return true;
 }
 
 void LinuxPlatform::mouse_move_to(int x, int y)
@@ -145,6 +154,11 @@ std::pair<int,int> LinuxPlatform::screen_size()
 
 std::pair<int,int> LinuxPlatform::mouse_position()
 {
+    // Prefer the position we track through uinput — on Wayland XQueryPointer
+    // doesn't follow the real (uinput-moved) cursor, which made every move
+    // start from a stale spot and "teleport" there first.
+    if (m_uinput.is_open() && m_uinput.has_pos()) return m_uinput.last_pos();
+
     Window root = DefaultRootWindow(dpy(m_display));
     Window ret_root, ret_child;
     int root_x, root_y, win_x, win_y;

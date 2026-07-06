@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <utility>
 
 // Kernel-level virtual input device (/dev/uinput). Unlike XTest — which only
 // updates XWayland's logical pointer and is ignored by Wayland compositors for
@@ -26,6 +27,13 @@ public:
     void button(const std::string& name, bool down);  // "left"/"right"/"middle"
     void scroll(const std::string& direction, int clicks);
 
+    // Authoritative cursor position: we set every absolute move, so we track it
+    // ourselves rather than trust XQueryPointer (which doesn't follow the
+    // uinput-moved cursor on Wayland). seed_pos primes it before the first move.
+    void seed_pos(int x, int y) { if (!m_have_pos) { m_last_x = x; m_last_y = y; m_have_pos = true; } }
+    bool has_pos() const { return m_have_pos; }
+    std::pair<int,int> last_pos() const { return {m_last_x, m_last_y}; }
+
     // Keyboard. `key_press` taps a chord ("ctrl+shift+a"); type sends text.
     void key_press(const std::string& chord);
     void key_hold(const std::string& chord);
@@ -37,6 +45,8 @@ private:
     void sync();
     int  m_fd = -1;
     int  m_sw = 1920, m_sh = 1080;
+    int  m_last_x = 0, m_last_y = 0;
+    bool m_have_pos = false;
 };
 
 }  // namespace syn

@@ -194,6 +194,7 @@ void UinputDevice::move_abs(int x, int y)
     emit(EV_ABS, ABS_X, int(int64_t(x) * 65535 / denom_x));
     emit(EV_ABS, ABS_Y, int(int64_t(y) * 65535 / denom_y));
     sync();
+    m_last_x = x; m_last_y = y; m_have_pos = true;  // authoritative position
 }
 
 void UinputDevice::button(const std::string& name, bool down)
