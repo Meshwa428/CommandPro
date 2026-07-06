@@ -56,6 +56,10 @@ public:
     // x1==x2==y1==y2==0 means full-screen capture.
     virtual void screen_capture(const std::string& file, int x1, int y1, int x2, int y2) = 0;
 
+    // Primary display size in pixels. Default is a common size for backends
+    // that can't query it (mock/headless); real backends override.
+    virtual std::pair<int,int> screen_size() { return {1920, 1080}; }
+
     // ── Clock ────────────────────────────────────────────────────────────────
     // MockPlatform advances a virtual clock instead of sleeping, so
     // `wait 2s` runs in microseconds under test.

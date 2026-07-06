@@ -136,6 +136,13 @@ void LinuxPlatform::mouse_scroll(const std::string& direction, int amount)
     XFlush(dpy(m_display));
 }
 
+std::pair<int,int> LinuxPlatform::screen_size()
+{
+    Display* d = dpy(m_display);
+    int scr = DefaultScreen(d);
+    return {DisplayWidth(d, scr), DisplayHeight(d, scr)};
+}
+
 std::pair<int,int> LinuxPlatform::mouse_position()
 {
     Window root = DefaultRootWindow(dpy(m_display));

@@ -2,37 +2,44 @@
 # Run it:  ./build/release/syn examples/rat_demo.syn
 # (moves your real cursor; keep hands off the mouse while it runs)
 #
-# Coordinates assume a ~1920x1080 screen. Lower them if yours is smaller.
+# Coordinates are computed from the actual screen size, so it fits any display.
 
+let s = screen.size()
+let left  = s.width / 5
+let right = s.width * 4 / 5
+let top   = s.height / 4
+let bot   = s.height * 3 / 4
+
+say "screen: {s.width} x {s.height}"
 say "RAT mode: human-like trajectories (curved, variable speed, tiny overshoot)"
 
 # `mouse x, y` moves through RAT at a natural (Fitts-calibrated) speed.
 # `mouse x, y <duration>` sets the movement time inline — no method calls.
 repeat 2 {
-    mouse 400, 300
+    mouse left, top
     wait 400ms
-    mouse 1400, 300
+    mouse right, top
     wait 400ms
-    mouse 1400, 800
+    mouse right, bot
     wait 400ms
-    mouse 400, 800
+    mouse left, bot
     wait 400ms
 }
 
 say ""
 say "Inline duration: slow (2s), then fast (250ms) — same distance"
-mouse 400, 300 2s
+mouse left, top 2s
 wait 300ms
-mouse 1400, 800 250ms
+mouse right, bot 250ms
 wait 300ms
 
 say ""
 say "Linear mode: straight line, constant speed (what every other bot does)"
 mouse.mode("linear")
 repeat 2 {
-    mouse 400, 300
+    mouse left, top
     wait 400ms
-    mouse 1400, 800
+    mouse right, bot
     wait 400ms
 }
 mouse.mode("rat")

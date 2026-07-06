@@ -259,6 +259,14 @@ void register_automation_stdlib(VM& vm, Platform* platform, const AutomationOpti
         return Value::none_val();
     });
 
+    add_method(vm, screen, "size", [&vm, platform](int, Value*) -> Value {
+        auto [w, h] = platform->screen_size();
+        ObjMap* m = vm.alloc_map();
+        m->set(Value::from_ptr(vm.intern_string("width", 5)), Value::from_int(w));
+        m->set(Value::from_ptr(vm.intern_string("height", 6)), Value::from_int(h));
+        return Value::from_ptr(m);
+    });
+
     vm.define_global("screen", Value::from_ptr(screen));
 
     // ── time ─────────────────────────────────────────────────────────────────

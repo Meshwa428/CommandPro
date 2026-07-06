@@ -43,6 +43,7 @@ public:
     void app_close(const std::string& name) override;
 
     void screen_capture(const std::string& file, int x1, int y1, int x2, int y2) override;
+    std::pair<int,int> screen_size() override;
 
     void     wait(uint64_t ns) override;
     uint64_t now_ns() override;
