@@ -531,9 +531,15 @@ bool LinuxPlatform::calibrate_rat(int movements, std::vector<CalibrationSample>&
                     t_first = double(ev.xmotion.time);
                 path.emplace_back(double(ev.xmotion.x), double(ev.xmotion.y));
             } else if (ev.type == ButtonPress) {
-                t_click = double(ev.xbutton.time);
-                path.emplace_back(double(ev.xbutton.x), double(ev.xbutton.y));
-                clicked = true;
+                // Only a click that actually lands on the dot counts — a miss
+                // isn't a real target acquisition and would pollute the fit, so
+                // ignore it and keep waiting on the same dot.
+                double mx = ev.xbutton.x - tx, my = ev.xbutton.y - ty;
+                if (std::hypot(mx, my) <= r + 6.0) {
+                    t_click = double(ev.xbutton.time);
+                    path.emplace_back(double(ev.xbutton.x), double(ev.xbutton.y));
+                    clicked = true;
+                }
             }
         }
         if (aborted) break;
