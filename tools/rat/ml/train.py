@@ -39,11 +39,15 @@ def build_tensors(ds):
     a_mean, a_std = ds["alpha"].mean(), ds["alpha"].std() + 1e-6
     alpha_n = ((ds["alpha"] - a_mean) / a_std).astype(np.float32)[:, None]
 
-    # Fitts: log D = a*log(dist) + b  (least squares); keep residual std for sampling
-    logD = np.log(ds["D"])
+    # Fitts on MOTION time only (exclude pause bins), so generation can treat total
+    # time = motion + idle. Fitting on raw D would fold pauses into "motion" and let
+    # the natural move balloon to 10s+. Motion = sum of dt below the pause threshold.
+    dt_ms = ds["dt_profile"] * ds["D"][:, None]            # (K,N) per-point ms
+    motion_ms = np.where(dt_ms < 45.0, dt_ms, 0.0).sum(1).clip(50.0, None)
+    logM = np.log(motion_ms)
     A = np.stack([dist_log, np.ones_like(dist_log)], 1)
-    (fa, fb), *_ = np.linalg.lstsq(A, logD, rcond=None)
-    sigma = float((logD - A @ [fa, fb]).std())
+    (fa, fb), *_ = np.linalg.lstsq(A, logM, rcond=None)
+    sigma = float((logM - A @ [fa, fb]).std())
 
     norm = {
         "ch_mean": ch_mean.tolist(), "ch_std": ch_std.tolist(),

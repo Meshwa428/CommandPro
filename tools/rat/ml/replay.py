@@ -99,10 +99,8 @@ def main():
     ap.add_argument("--rate", type=int, default=60,
                     help="sample rate Hz: sets point count (duration*rate). ~60=real mouse, "
                          "higher=smoother, lower=snappier bigger jumps")
-    ap.add_argument("--pause-prob", type=float, default=0.0,
-                    help="chance [0-1] of a random mid-move dead stop (distraction)")
-    ap.add_argument("--pause-ms", type=float, nargs=2, default=(400, 2500),
-                    help="min/max hold duration for an injected pause")
+    ap.add_argument("--rest-gap", type=float, default=2500,
+                    help="mean ms of slack per rest pause (lower = more/frequent rests)")
     ap.add_argument("--loop", type=int, default=1)
     args = ap.parse_args()
 
@@ -118,7 +116,7 @@ def main():
             path = m.generate(src[0], src[1], dst[0], dst[1],
                               persona=args.persona, alpha=args.alpha,
                               duration_ms=args.duration, rate_hz=args.rate,
-                              pause_prob=args.pause_prob, pause_ms=tuple(args.pause_ms))
+                              rest_gap_ms=args.rest_gap)
             print(f"  run {i+1}: {len(path)} pts, {path[-1][2]} ms")
             print("  moving in 2s — watch the cursor...")
             time.sleep(2)

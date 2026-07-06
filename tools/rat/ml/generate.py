@@ -46,19 +46,18 @@ class MouseModel:
 
     def generate(self, x0, y0, x1, y1, persona: int = 0, alpha: float | None = None,
                  duration_ms: float | None = None, rate_hz: float = 60.0,
-                 pause_prob: float = 0.0, pause_ms=(400.0, 2500.0),
-                 ddim_steps: int = 50, seed=None):
+                 rest_gap_ms: float = 2500.0, ddim_steps: int = 50, seed=None):
         """Return a list of (x, y, t_ms): real screen coords + absolute time.
 
-        Point count is NOT fixed: the model's 64-node output is only the internal
-        shape resolution. Output points = duration * rate_hz (the device sample rate),
-        so a longer move gets proportionally more points. rate_hz ~60 = a real mouse's
-        polling; raise for smoother, lower for snappier bigger jumps.
+        duration_ms is the TOTAL time BUDGET (motion + idle), respected exactly. The
+        aimed motion itself takes its natural Fitts time (physics — you can't glide
+        800px continuously for 10s); any leftover slack is filled with REST pauses
+        whose count scales with the slack (~one per rest_gap_ms). So a bigger budget
+        yields more/longer rests: the amount of idling is predictable from the budget
+        even though where each rest lands is random. None -> natural Fitts time, no slack.
 
-        pause_prob: chance of a mid-move DEAD STOP (eyes-wandered distraction). This is
-        a behavioral overlay, not a learned/geometry-driven thing — where a human's
-        attention drifts is random, so it is injected, not predicted. pause_ms = (min,
-        max) hold duration; the pause time is added on top of duration_ms.
+        Point count is not fixed: output points = total_time * rate_hz. rate_hz ~60 =
+        a real mouse's polling; raise for smoother, lower for snappier bigger jumps.
         """
         d = math.hypot(x1 - x0, y1 - y0)
         if d < 1.0:
@@ -88,55 +87,79 @@ class MouseModel:
         c, si = math.cos(ang), math.sin(ang)
         real = (cxy * d) @ np.array([[c, -si], [si, c]]).T + np.array([x0, y0])
 
-        # timing: pick a real dt profile (pauses/bursts) from a similar-distance move,
-        # rescale it to the requested/Fitts total. This is genuine human timing texture.
-        if duration_ms is None:
-            logD = nm["fitts_a"] * math.log(d) + nm["fitts_b"] + nm["fitts_sigma"] * float(np.random.randn())
-            duration_ms = math.exp(logD)
+        # natural aimed-motion time (Fitts), independent of the budget
+        t_move = math.exp(nm["fitts_a"] * math.log(d) + nm["fitts_b"]
+                          + nm["fitts_sigma"] * float(np.random.randn()))
+        budget = t_move if duration_ms is None else float(duration_ms)
+        t_move = min(t_move, budget)                        # tight budget -> move faster
+        slack = max(0.0, budget - t_move)
+
+        # timing: real dt profile (pauses/bursts) from a similar-distance move, over t_move
         near = np.argsort(np.abs(np.log(self.dt_prof_dist) - math.log(d)))[:64]
         prof = self.dt_profiles[np.random.choice(near)]     # sums to 1
-        t = np.cumsum(prof) * duration_ms                   # timestamp per shape node
+        t = np.cumsum(prof) * t_move                        # timestamp per shape node
 
-        # resample the (shape, timing) node path to n = duration*rate points, equally
-        # spaced in time. Fast bursts -> big jumps between frames (snap). Where the
-        # profile has a big-dt bin (a real pause), HOLD position across those frames
-        # instead of gliding through it -> a genuine dead stop, not a slow slide.
-        n = max(8, int(round(duration_ms / 1000.0 * rate_hz)))
+        # resample motion to n = t_move*rate points, equally spaced in time. Fast bursts
+        # -> big jumps (snap). A big-dt profile bin (a real micro-pause) -> HOLD position
+        # across those frames (dead stop), not a slow slide.
+        n = max(8, int(round(t_move / 1000.0 * rate_hz)))
         frame = 1000.0 / rate_hz
-        pause_thresh = max(3.0 * frame, 40.0)              # dt bin above this = a pause
-        tq = np.linspace(0.0, duration_ms, n)
+        pause_thresh = max(3.0 * frame, 40.0)
+        tq = np.linspace(0.0, t_move, n)
         idx = np.clip(np.searchsorted(t, tq, side="right") - 1, 0, self.seq_len - 2)
         seg_dt = t[idx + 1] - t[idx]
         frac = np.where(seg_dt > 1e-6, (tq - t[idx]) / seg_dt, 0.0)
-        frac = np.where(seg_dt > pause_thresh, 0.0, frac)  # freeze position during a pause
+        frac = np.where(seg_dt > pause_thresh, 0.0, frac)
         xr = real[idx, 0] + frac * (real[idx + 1, 0] - real[idx, 0])
         yr = real[idx, 1] + frac * (real[idx + 1, 1] - real[idx, 1])
+        motion = [(float(px), float(py), tt) for px, py, tt in zip(xr, yr, tq)]
+        motion[-1] = (float(x1), float(y1), t_move)
 
-        out = [(float(px), float(py), int(round(tt))) for px, py, tt in zip(xr, yr, tq)]
-        out[-1] = (float(x1), float(y1), int(round(duration_ms)))
-
-        if pause_prob > 0.0 and np.random.rand() < pause_prob:
-            out = self._inject_pause(out, rate_hz, pause_ms)
-        return out
+        # fill the slack with rest pauses (count scales with slack) -> total == budget
+        out = self._add_rests(motion, slack, rate_hz, rest_gap_ms)
+        return [(px, py, int(round(tt))) for px, py, tt in out]
 
     @staticmethod
-    def _inject_pause(pts, rate_hz, pause_ms):
-        """Freeze the cursor at a random mid-path point for a random hold, then shift
-        the rest of the timeline. A real dead stop (held frames), not a slow glide."""
-        k = np.random.randint(int(len(pts) * 0.2), max(int(len(pts) * 0.85), int(len(pts) * 0.2) + 1))
-        hold = float(np.random.uniform(*pause_ms))
+    def _add_rests(pts, slack_ms, rate_hz, rest_gap_ms):
+        """Insert dead-stop rests summing to slack_ms at random points. Rest COUNT
+        scales with slack (~one per rest_gap_ms); placement/durations are random."""
+        if slack_ms < 60.0 or len(pts) < 4:
+            if slack_ms >= 60.0:                            # too short to place -> hold at end
+                x, y, t = pts[-1]
+                pts = pts[:-1] + [(x, y, t + slack_ms)]
+            return pts
         frame = 1000.0 / rate_hz
-        x, y, t = pts[k]
-        holds = [(x, y, int(round(t + frame * j))) for j in range(1, max(1, int(hold / frame)) + 1)]
-        shift = int(round(hold))
-        rest = [(px, py, pt + shift) for (px, py, pt) in pts[k + 1:]]
-        return pts[:k + 1] + holds + rest
+        lo, hi = int(len(pts) * 0.1), int(len(pts) * 0.9)
+        n = max(1, int(np.random.poisson(slack_ms / max(rest_gap_ms, 200.0))))
+        n = min(n, hi - lo)
+        durs = np.diff(np.concatenate([[0.0], np.sort(np.random.uniform(0, slack_ms, n - 1)), [slack_ms]]))
+        locs = sorted(np.random.choice(range(lo, hi), size=n, replace=False))
+        loc_dur = dict(zip(locs, durs))
+        out, shift = [], 0.0
+        for i, (x, y, t) in enumerate(pts):
+            nt = t + shift
+            out.append((x, y, nt))
+            if i in loc_dur:
+                hold = loc_dur[i]
+                for j in range(1, max(1, int(hold / frame)) + 1):
+                    out.append((x, y, nt + frame * j))
+                shift += hold
+        return out
 
 
 if __name__ == "__main__":
+    import numpy as np
     m = MouseModel()
-    # point count scales with duration (not fixed 64)
-    for dur in (500, 1000, 3000, 8000):
+    # total-time budget: motion is ~fixed, extra time becomes more/longer rests
+    for dur in (None, 1500, 5000, 10000):
+        np.random.seed(0)
         path = m.generate(100, 100, 900, 600, persona=3, alpha=1.3, duration_ms=dur, seed=0)
-        print(f"duration={dur:5d}ms -> {len(path):4d} pts ({len(path)/(dur/1000):.0f}/s), "
-              f"end=({path[-1][0]:.0f},{path[-1][1]:.0f}) target=(900,600)")
+        xy = np.array([(p[0], p[1]) for p in path]); seg = np.hypot(*np.diff(xy, axis=0).T)
+        # count distinct rest runs (consecutive near-still frames)
+        still = seg < 0.6; rests = 0; cur = 0; held = 0
+        for s in still:
+            if s: cur += 1; held += 1
+            elif cur: rests += 1 if cur > 3 else 0; cur = 0
+        tot = path[-1][2]
+        print(f"budget={str(dur):>5}ms -> total={tot:5d}ms, {len(path):4d} pts, "
+              f"{rests} rests, {held*1000//60}ms idle, end=({path[-1][0]:.0f},{path[-1][1]:.0f})")
