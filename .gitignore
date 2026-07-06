@@ -31,3 +31,4 @@ tools/rat/ml/.venv/
 tools/rat/ml/out/
 tools/rat/ml/__pycache__/
 tools/rat/ml/*.pt
+tools/rat/ml/train.log
