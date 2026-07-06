@@ -471,12 +471,10 @@ bool LinuxPlatform::calibrate_rat(int movements, std::vector<CalibrationSample>&
                  GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
 
     GC gc = XCreateGC(d, win, 0, nullptr);
-    // Larger bitmap font for the counter if available. XLoadQueryFont returns
-    // null (no async X error) when the font is absent, so we fall back cleanly
-    // to the GC's default font.
-    for (const char* fname : {"10x20", "9x15", "fixed"}) {
-        if (XFontStruct* fs = XLoadQueryFont(d, fname)) { XSetFont(d, gc, fs->fid); break; }
-    }
+    // Use the GC's built-in default font only. Loading a named font (10x20,
+    // fixed, ...) raises a fatal BadName X error on systems with an empty font
+    // path (e.g. XWayland with no bitmap fonts installed). The progress bar
+    // carries the visual "how much left" cue; the text is a secondary readout.
     std::mt19937 rng(std::random_device{}());
     auto randint = [&](int lo, int hi) { return int(std::uniform_int_distribution<int>(lo, hi)(rng)); };
 
