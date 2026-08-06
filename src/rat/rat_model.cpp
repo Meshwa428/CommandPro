@@ -167,16 +167,69 @@ static double randn(uint64_t& s) // Box-Muller
     return std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * M_PI * u2);
 }
 
+// ── Spline path helper ──────────────────────────────────────────────────────
+//
+// Centripetal Catmull-Rom (alpha = 0.5): an interpolating cubic spline that
+// passes through every control point and, unlike the uniform variant, never
+// forms cusps or self-loops even when the control points are placed randomly.
+// Sampling it densely is what makes the motion buttery-smooth.
+namespace {
+struct Pt { double x, y; };
+
+Pt cr_eval(const Pt& p0, const Pt& p1, const Pt& p2, const Pt& p3, double u)
+{
+    auto tnext = [](double ti, const Pt& a, const Pt& b) {
+        double d = std::hypot(b.x - a.x, b.y - a.y);
+        return ti + std::sqrt(std::max(d, 1e-9)); // alpha = 0.5, guard coincident pts
+    };
+    double t0 = 0.0;
+    double t1 = tnext(t0, p0, p1);
+    double t2 = tnext(t1, p1, p2);
+    double t3 = tnext(t2, p2, p3);
+    double t = t1 + u * (t2 - t1);
+    auto lerp = [](const Pt& a, const Pt& b, double f) {
+        return Pt{a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f};
+    };
+    Pt A1 = lerp(p0, p1, (t - t0) / (t1 - t0));
+    Pt A2 = lerp(p1, p2, (t - t1) / (t2 - t1));
+    Pt A3 = lerp(p2, p3, (t - t2) / (t3 - t2));
+    Pt B1 = lerp(A1, A2, (t - t0) / (t2 - t0));
+    Pt B2 = lerp(A2, A3, (t - t1) / (t3 - t1));
+    return lerp(B1, B2, (t - t1) / (t2 - t1));
+}
+
+// Sample the whole spline through `ctrl` at `samples` evenly-parameterised
+// points (endpoints duplicated so the curve reaches the first/last control
+// point). Returns positions only; timing is applied by the caller.
+std::vector<Pt> catmull_rom(const std::vector<Pt>& ctrl, int samples)
+{
+    std::vector<Pt> out;
+    int K = int(ctrl.size());
+    if (K < 2) return ctrl;
+    int segs = K - 1;
+    int per = std::max(2, samples / segs);
+    for (int s = 0; s < segs; ++s) {
+        const Pt& p1 = ctrl[s];
+        const Pt& p2 = ctrl[s + 1];
+        const Pt& p0 = ctrl[s == 0 ? 0 : s - 1];
+        const Pt& p3 = ctrl[s + 2 >= K ? K - 1 : s + 2];
+        int start = (s == 0) ? 0 : 1;  // avoid duplicating shared segment endpoints
+        for (int i = start; i <= per; ++i)
+            out.push_back(cr_eval(p0, p1, p2, p3, double(i) / per));
+    }
+    return out;
+}
+} // namespace
+
 // ── Trajectory generation ──────────────────────────────────────────────────────
 //
-// Real human movement is a sequence of overlapping minimum-jerk sub-movements
-// (design 005 §2.1), not one smooth arc. This generates that as several
-// minimum-jerk segments chained end-to-end in time: a primary movement
-// (optionally overshooting the target, §2.6) followed by 1-3 shrinking
-// correction segments converging on the true target. Because minimum-jerk
-// velocity is zero at both ends of each segment, chaining them already
-// produces the multi-peaked velocity envelope detectors look for — without
-// needing literal analytic impulse summation.
+// A smooth spline through a handful of randomly-jittered control points, sampled
+// densely (~2px apart) so playback is continuous rather than stepped. The control
+// points sit along the start->target line with Gaussian perpendicular offsets
+// (bigger for longer moves), giving a natural bow/zigzag; an optional control
+// point past the target produces a human overshoot-and-settle. Timing follows a
+// minimum-jerk ease (slow start, fast middle, slow landing) over the Fitts'-law
+// duration, so acceleration looks human without a trained model.
 std::vector<Waypoint> RatModel::generate(int x0, int y0, int x1, int y1,
                                           double speed_mult, bool linear_mode,
                                           double duration_ms_override)
@@ -212,75 +265,45 @@ std::vector<Waypoint> RatModel::generate(int x0, int y0, int x1, int y1,
         return out;
     }
 
-    double hesitation_ms = 100.0 + rand01(rs) * 200.0; // 100-300ms, §2.5
+    double hesitation_ms = 60.0 + rand01(rs) * 140.0; // 60-200ms pre-movement pause
 
-    bool overshoot = rand01(rs) < prof.overshoot_rate;
-    double px = x1, py = y1;
-    if (overshoot) {
-        double frac = 0.03 + rand01(rs) * 0.05; // overshoot by 3-8% of distance
-        px = x1 + dx * frac; py = y1 + dy * frac;
+    double ux = dx / distance, uy = dy / distance;
+    double perpx = -uy, perpy = ux;
+
+    // Control points: start, a few interior points on the line with Gaussian
+    // perpendicular offsets (the "bow"/zigzag), then the target. Offset spread
+    // grows with distance but is capped, matching how longer drags wander more.
+    double variance = std::min(distance * (prof.curvature_scale * 2.2), 90.0);
+    int n_interior = 2 + int(rand01(rs) * 4); // 2-5 interior control points
+    std::vector<Pt> ctrl;
+    ctrl.push_back({double(x0), double(y0)});
+    for (int i = 1; i <= n_interior; ++i) {
+        double f = double(i) / (n_interior + 1);
+        double off = randn(rs) * variance;
+        ctrl.push_back({x0 + dx * f + perpx * off, y0 + dy * f + perpy * off});
     }
-
-    struct Seg { double sx, sy, ex, ey, dur_ms; };
-    std::vector<Seg> segs;
-
-    double primary_time_frac = 0.55 + rand01(rs) * 0.20;
-    double primary_dur = duration_ms * primary_time_frac;
-    segs.push_back({double(x0), double(y0), px, py, primary_dur});
-    double remaining_ms = duration_ms - primary_dur;
-
-    int n_corrections = 1 + int(rand01(rs) * 3); // 1-3 corrections: 2-4 sub-movements total
-    double cx = px, cy = py;
-    for (int i = 0; i < n_corrections; ++i) {
-        bool last = (i == n_corrections - 1);
-        double tx = last ? double(x1) : (cx + (x1 - cx) * (0.5 + rand01(rs) * 0.3));
-        double ty = last ? double(y1) : (cy + (y1 - cy) * (0.5 + rand01(rs) * 0.3));
-        double seg_dur = last ? std::max(60.0, remaining_ms)
-                              : std::max(40.0, remaining_ms * (0.5 + rand01(rs) * 0.2));
-        segs.push_back({cx, cy, tx, ty, seg_dur});
-        remaining_ms = std::max(40.0, remaining_ms - seg_dur);
-        cx = tx; cy = ty;
+    if (rand01(rs) < prof.overshoot_rate) {           // overshoot past the target
+        double frac = 0.02 + rand01(rs) * 0.04;
+        ctrl.push_back({x1 + dx * frac, y1 + dy * frac});
     }
-    segs.back().ex = x1; segs.back().ey = y1; // exact landing, no float drift
+    ctrl.push_back({double(x1), double(y1)});
 
-    double curvature_amp = distance * prof.curvature_scale;
-    double curve_sign = (rand01(rs) < 0.5) ? -1.0 : 1.0; // which side the arm sweeps
+    int samples = std::clamp(int(distance / 2.0), 24, 1200); // ~2px spacing, dense
+    std::vector<Pt> pts = catmull_rom(ctrl, samples);
+    int M = int(pts.size());
 
+    // Timing: minimum-jerk ease (slow-fast-slow) over the Fitts duration. Points
+    // are uniform along the curve; the eased time-of-arrival gives the velocity
+    // profile. t_ms steps stay >=1ms so replay_waypoints renders every point.
     double t_cursor = hesitation_ms;
     out.push_back({x0, y0, uint32_t(std::lround(t_cursor))});
-
-    for (size_t si = 0; si < segs.size(); ++si) {
-        const Seg& sg = segs[si];
-        double sdx = sg.ex - sg.sx, sdy = sg.ey - sg.sy;
-        double seg_len = std::hypot(sdx, sdy);
-        double ux = seg_len > 1e-6 ? sdx / seg_len : 0.0;
-        double uy = seg_len > 1e-6 ? sdy / seg_len : 0.0;
-        double perpx = -uy, perpy = ux;
-        int n = std::max(2, int(sg.dur_ms / 16.0));
-        double speed_px_per_ms = seg_len / std::max(sg.dur_ms, 1.0);
-
-        for (int i = 1; i <= n; ++i) {
-            double u = double(i) / n;
-            double s = 3 * u * u - 2 * u * u * u; // minimum-jerk position fraction
-            double bx = sg.sx + sdx * s;
-            double by = sg.sy + sdy * s;
-
-            double arc = (si == 0) ? curve_sign * curvature_amp * std::sin(M_PI * u) : 0.0;
-
-            // Signal-dependent noise (§2.2): sigma scales with local speed,
-            // not flat — fast mid-movement is noisier, slow approach is precise.
-            double dsdu = 6 * u * (1 - u);
-            double local_speed = speed_px_per_ms * dsdu;
-            double jitter = local_speed > 0 ? randn(rs) * (prof.tremor_sigma * local_speed) : 0.0;
-
-            double fx = bx + perpx * (arc + jitter);
-            double fy = by + perpy * (arc + jitter);
-            t_cursor += sg.dur_ms / n;
-            out.push_back({int(std::lround(fx)), int(std::lround(fy)),
-                            uint32_t(std::lround(t_cursor))});
-        }
+    for (int i = 1; i < M; ++i) {
+        double u = double(i) / (M - 1);
+        double s = 3 * u * u - 2 * u * u * u;         // min-jerk position fraction
+        out.push_back({int(std::lround(pts[i].x)), int(std::lround(pts[i].y)),
+                        uint32_t(std::lround(hesitation_ms + duration_ms * s))});
     }
-    out.back().x = x1; out.back().y = y1; // exact final landing
+    out.back().x = x1; out.back().y = y1;             // exact final landing
     return out;
 }
 

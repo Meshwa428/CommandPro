@@ -1,15 +1,10 @@
 #pragma once
 
-// Calibration constants for RatModel (src/rat/rat_model.cpp), computed once
-// offline by tools/rat/calibrate_physics.py from Dataset/movements.jsonl
-// (6,715 real human mouse movements). Not model weights — descriptive
-// statistics baked in so the C++ inference path has zero runtime file I/O
-// and zero dependency on the dataset. Re-run the script and paste new
-// values here if the dataset changes; nothing else needs updating.
-//
-// Duration (Fitts' law a/b) intentionally does NOT come from this dataset —
-// see calibrate_physics.py's docstring for why — and uses standard
-// Fitts'-law-literature constants instead.
+// Tuning constants for RatModel (src/rat/rat_model.cpp). Plain literals baked
+// into the binary — no model weights, no dataset, no runtime file I/O. The
+// spline generator reads these to shape its control-point spread and overshoot
+// behaviour; adjust them by hand to taste. Duration uses standard Fitts'-law
+// literature constants.
 
 namespace syn {
 

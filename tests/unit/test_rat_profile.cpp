@@ -83,6 +83,17 @@ TEST_CASE("generate honors an explicit duration override", "[rat]") {
     REQUIRE(def.back().t_ms < t_override);
 }
 
+TEST_CASE("generate spline lands on target with monotonic time", "[rat]") {
+    // The Catmull-Rom path may bow/overshoot mid-flight, but must terminate
+    // exactly on the target, with non-decreasing timestamps and dense sampling.
+    auto wp = RatModel::generate(100, 200, 900, 600);
+    REQUIRE(wp.size() > 10);                 // dense, not a straight 2-point hop
+    REQUIRE(wp.back().x == 900);             // endpoint pinned to target
+    REQUIRE(wp.back().y == 600);
+    for (size_t i = 1; i < wp.size(); ++i)
+        REQUIRE(wp[i].t_ms >= wp[i - 1].t_ms);  // time never runs backward
+}
+
 TEST_CASE("estimate_profile falls back on degenerate input", "[rat]") {
     RatProfile def = RatProfile::defaults();
     REQUIRE(estimate_profile({}).fitts_a == Catch::Approx(def.fitts_a));
