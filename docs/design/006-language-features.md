@@ -431,6 +431,19 @@ Trained specifically on UI element detection. Not a general object detector.
 Run on real apps → AT-SPI2/UIA provides element bounding boxes for free →
 converts to YOLO label format → thousands of labeled samples, zero human effort.
 
+**Sliced inference — SAHI (https://github.com/obss/sahi):**
+Full-screenshot inference downscales to model input size (640px), so small
+elements (icons, checkboxes, menu items on 1440p/4K screens) get skipped.
+SAHI fixes this: slice screenshot into overlapping tiles, run YOLO per tile,
+merge detections across tile boundaries.
+
+- Slice size ~512×512, overlap ratio ~0.2 (tunable)
+- Use SAHI (Python) during training/validation in `tools/vision/`
+- Runtime C++ path reimplements the same tile+merge loop around the ONNX
+  wrapper in `yolo_ui.cpp` — it's just tiling + NMS across slices, no dependency
+- Trade-off: N tiles = N× inference (~8ms × tiles); only engage sliced path
+  when screenshot resolution ≫ model input, or on `see`-miss retry
+
 ### 16.4 OCR Integration
 
 After YOLO detects WHERE elements are, a tiny CRNN reads their text:
