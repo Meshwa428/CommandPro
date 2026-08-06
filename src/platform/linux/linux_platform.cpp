@@ -154,10 +154,11 @@ std::pair<int,int> LinuxPlatform::screen_size()
 
 std::pair<int,int> LinuxPlatform::mouse_position()
 {
-    // Prefer the position we track through uinput — on Wayland XQueryPointer
-    // doesn't follow the real (uinput-moved) cursor, which made every move
-    // start from a stale spot and "teleport" there first.
-    if (m_uinput.is_open() && m_uinput.has_pos()) return m_uinput.last_pos();
+    // uinput path: our own absolute moves are tracked exactly, and physical
+    // mouse motion is folded in from the raw evdev devices (current_pos drains
+    // them). XQueryPointer can't be used here — on Wayland it follows neither
+    // the uinput-moved cursor nor reliably the physical one.
+    if (m_uinput.is_open() || use_uinput()) return m_uinput.current_pos();
 
     Window root = DefaultRootWindow(dpy(m_display));
     Window ret_root, ret_child;

@@ -1,9 +1,13 @@
 #include "uinput_device.h"
 
 #include <linux/uinput.h>
+#include <linux/input.h>
 #include <linux/input-event-codes.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
+#include <dirent.h>
+#include <algorithm>
 #include <cstring>
 #include <cctype>
 #include <chrono>
@@ -120,6 +124,7 @@ UinputDevice::~UinputDevice()
         ioctl(m_fd, UI_DEV_DESTROY);
         close(m_fd);
     }
+    for (int fd : m_phys_fds) close(fd);
 }
 
 bool UinputDevice::ensure_open(int screen_w, int screen_h)
@@ -195,6 +200,68 @@ void UinputDevice::move_abs(int x, int y)
     emit(EV_ABS, ABS_Y, int(int64_t(y) * 65535 / denom_y));
     sync();
     m_last_x = x; m_last_y = y; m_have_pos = true;  // authoritative position
+}
+
+// Open every physical relative-pointer under /dev/input (once). A device is a
+// mouse if it reports EV_REL with REL_X/REL_Y. Our own virtual device declares
+// only REL_WHEEL, so it is skipped. Non-blocking so drain never stalls. Missing
+// read permission on some nodes is fine — we just track fewer devices.
+void UinputDevice::scan_physical_pointers()
+{
+    if (m_phys_scanned) return;
+    m_phys_scanned = true;
+    DIR* dir = opendir("/dev/input");
+    if (!dir) return;
+    for (dirent* de; (de = readdir(dir)); ) {
+        if (std::strncmp(de->d_name, "event", 5) != 0) continue;
+        std::string path = std::string("/dev/input/") + de->d_name;
+        int fd = ::open(path.c_str(), O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+        unsigned long evbit = 0, relbit = 0;
+        if (ioctl(fd, EVIOCGBIT(0, sizeof(evbit)), &evbit) < 0 ||
+            !(evbit & (1UL << EV_REL)) ||
+            ioctl(fd, EVIOCGBIT(EV_REL, sizeof(relbit)), &relbit) < 0 ||
+            !(relbit & (1UL << REL_X)) || !(relbit & (1UL << REL_Y))) {
+            ::close(fd);
+            continue;
+        }
+        m_phys_fds.push_back(fd);
+    }
+    closedir(dir);
+}
+
+// Fold any pending physical mouse motion into the tracked position. Raw REL
+// deltas are device counts (the compositor applies its own acceleration to the
+// visible cursor, which we can't see natively) — good enough to notice the user
+// moved and re-anchor: the next absolute move corrects any drift exactly.
+void UinputDevice::drain_physical()
+{
+    scan_physical_pointers();
+    long dx = 0, dy = 0;
+    input_event evs[64];
+    for (int fd : m_phys_fds) {
+        for (;;) {
+            ssize_t n = ::read(fd, evs, sizeof(evs));
+            if (n <= 0) break;
+            for (size_t i = 0; i < n / sizeof(input_event); ++i) {
+                if (evs[i].type != EV_REL) continue;
+                if (evs[i].code == REL_X) dx += evs[i].value;
+                else if (evs[i].code == REL_Y) dy += evs[i].value;
+            }
+            if (size_t(n) < sizeof(evs)) break;  // drained this device
+        }
+    }
+    if (dx || dy) {
+        m_last_x = std::clamp(m_last_x + int(dx), 0, m_sw - 1);
+        m_last_y = std::clamp(m_last_y + int(dy), 0, m_sh - 1);
+        m_have_pos = true;
+    }
+}
+
+std::pair<int,int> UinputDevice::current_pos()
+{
+    drain_physical();
+    return {m_last_x, m_last_y};
 }
 
 void UinputDevice::button(const std::string& name, bool down)

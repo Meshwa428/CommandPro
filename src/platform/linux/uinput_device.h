@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <utility>
+#include <vector>
 
 // Kernel-level virtual input device (/dev/uinput). Unlike XTest — which only
 // updates XWayland's logical pointer and is ignored by Wayland compositors for
@@ -34,6 +35,12 @@ public:
     bool has_pos() const { return m_have_pos; }
     std::pair<int,int> last_pos() const { return {m_last_x, m_last_y}; }
 
+    // Real cursor position, Linux-native: our own absolute moves are tracked
+    // exactly, and PHYSICAL mouse motion is folded in by draining the relative
+    // (REL_X/REL_Y) evdev devices under /dev/input — so if the user nudges the
+    // real mouse between commands, this reflects it. No compositor/X dependency.
+    std::pair<int,int> current_pos();
+
     // Keyboard. `key_press` taps a chord ("ctrl+shift+a"); type sends text.
     void key_press(const std::string& chord);
     void key_hold(const std::string& chord);
@@ -43,10 +50,15 @@ public:
 private:
     void emit(unsigned type, unsigned code, int value);
     void sync();
+    void scan_physical_pointers();   // open REL mice under /dev/input (once)
+    void drain_physical();           // fold pending physical deltas into m_last_*
+
     int  m_fd = -1;
     int  m_sw = 1920, m_sh = 1080;
     int  m_last_x = 0, m_last_y = 0;
     bool m_have_pos = false;
+    std::vector<int> m_phys_fds;     // physical relative-pointer evdev fds
+    bool m_phys_scanned = false;
 };
 
 }  // namespace syn
